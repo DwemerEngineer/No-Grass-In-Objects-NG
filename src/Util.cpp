@@ -177,7 +177,7 @@ namespace Util
 				continue;
 
 			if (ls->Ids.insert(formID).second) {
-				ls->Forms.push_back(form);
+				ls->Forms.emplace(form);
 			}
 		}
 		return ls;
@@ -187,13 +187,17 @@ namespace Util
 	{
 		std::string formIDs;
 
-		for (const auto& form : Forms) {
+		auto it = Forms.begin();
+
+		while (it != Forms.end()) {
+			auto form = *it;
+
 			if (form == nullptr)
 				continue;
 
 			auto formID = form->formID;
 
-			if (form != Forms.back()) {
+			if (it++ != Forms.end()) {
 				formIDs += fmt::format("0x{:08x}, ", formID);
 			} else {
 				formIDs += fmt::format("and 0x{:08x}", formID);
@@ -215,7 +219,7 @@ namespace Util
 		return this->Ids.contains(formId);
 	}
 
-	std::vector<RE::TESForm*> CachedFormList::getAll() const
+	std::unordered_set<RE::TESForm*> CachedFormList::getAll() const
 	{
 		return this->Forms;
 	}

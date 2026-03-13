@@ -22,10 +22,10 @@ namespace Util
 
 		bool Contains(unsigned int formId) const;
 
-		std::vector<RE::TESForm*> getAll() const;
+		std::unordered_set<RE::TESForm*> getAll() const;
 
 	private:
-		std::vector<RE::TESForm*> Forms = std::vector<RE::TESForm*>();
+		std::unordered_set<RE::TESForm*> Forms = std::unordered_set<RE::TESForm*>();
 
 		std::unordered_set<RE::FormID> Ids = std::unordered_set<RE::FormID>();
 	};
