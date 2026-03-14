@@ -6,6 +6,23 @@
 Raycast::RayCollector::RayCollector() = default;
 Raycast::CdBodyPairCollector::CdBodyPairCollector() = default;
 
+namespace RE
+{
+	float hkpWorldRayCaster::AddBroadPhaseHandle(const hkpBroadPhaseHandle* a_broadphaseHandle, std::int32_t a_castIndex)
+	{
+		using func_t = decltype(&hkpWorldRayCaster::AddBroadPhaseHandle);
+		static REL::Relocation<func_t> func{ RELOCATION_ID(63651, 64640) };
+		return func(this, a_broadphaseHandle, a_castIndex);
+	}
+
+	float hkpSimpleWorldRayCaster ::AddBroadPhaseHandle(const hkpBroadPhaseHandle* a_broadphaseHandle, std::int32_t a_castIndex)
+	{
+		using func_t = decltype(&hkpSimpleWorldRayCaster::AddBroadPhaseHandle);
+		static REL::Relocation<func_t> func{ RELOCATION_ID(63647, 64636) };
+		return func(this, a_broadphaseHandle, a_castIndex);
+	}
+}
+
 void Raycast::HandleErrorMessage()
 {
 	if (RaycastErrorCount < 20) {
@@ -65,6 +82,10 @@ void Raycast::CdBodyPairCollector::addCdBodyPair(const RE::hkpCdBody& bodyA, con
 
 	const RE::hkpCdBody* obj = &bodyA;
 
+	//auto bhkPhantom = currentPhantom.load(std::memory_order_acquire);
+
+	//auto hkpPhantom = reinterpret_cast<RE::hkpPhantom*>(bhkPhantom->referencedObject.get());
+
 	if (obj == phantom->GetCollidable()) {
 		obj = &bodyB;
 	}
@@ -84,11 +105,12 @@ void Raycast::CdBodyPairCollector::addCdBodyPair(const RE::hkpCdBody& bodyA, con
 
 	const uint64_t mask = 1ULL << flags.filter;
 	if (this->settingsCache->RaycastMask & mask) {
-		auto rsTESForm = GrassControl::RaycastHelper::GetRaycastHitBaseForm(hit.body);
-		if (this->settingsCache->Ignore != nullptr && this->settingsCache->Ignore->Contains(rsTESForm)) {
-			if (GrassControl::Config::DebugLogEnable && rsTESForm) {
+		hit.hitObject = hit.getAVObject() ? hit.getAVObject()->GetUserData() : nullptr;
+
+		if (this->settingsCache->Ignore != nullptr && this->settingsCache->Ignore->Contains(hit.hitObject)) {
+			if (GrassControl::Config::DebugLogEnable && hit.hitObject) {
 				auto cell = RE::PlayerCharacter::GetSingleton()->GetParentCell();
-				logger::debug("Ignored 0x{:x} in {}", rsTESForm->formID, cell->GetFormEditorID() ? cell->GetFormEditorID() : cell->GetName());
+				logger::debug("Ignored 0x{:x} in {}", hit.hitObject->formID, cell->GetFormEditorID() ? cell->GetFormEditorID() : cell->GetName());
 			}
 
 			return;
@@ -113,13 +135,12 @@ void Raycast::RayCollector::Reset()
 {
 	earlyOutHitFraction = 1.0f;
 	hits.clear();
-	objectFilter.clear();
 }
 
 void Raycast::CdBodyPairCollector::Reset()
 {
+	earlyOut = false;
 	hits.clear();
-	objectFilter.clear();
 }
 
 RE::NiAVObject* Raycast::RayCollector::HitResult::getAVObject()
@@ -143,35 +164,25 @@ RE::NiAVObject* Raycast::getAVObject(const RE::hkpCdBody* body)
 	return body ? getAVObject(body) : nullptr;
 }
 
-Raycast::RayResult Raycast::hkpCastRay(const glm::vec4& start, const glm::vec4& end, const GrassControl::RaycastHelper* cache) noexcept
+Raycast::RayResult Raycast::hkpCastRay(const glm::vec4& start, const glm::vec4& end, const GrassControl::RaycastHelper* cache, bool forCliffs) noexcept
 {
 	constexpr auto hkpScale = 0.0142875f;
 	const glm::vec4 dif = end - start;
 
 	constexpr auto one = 1.0f;
 	const auto from = start * hkpScale;
-	const auto to = dif * hkpScale;
+	const auto to = end * hkpScale;
 
 	RE::hkpWorldRayCastInput pickRayInput{};
 	pickRayInput.from = RE::hkVector4(from.x, from.y, from.z, one);
-	pickRayInput.to = RE::hkVector4(0.0, 0.0, 0.0, 0.0);
+	pickRayInput.to = RE::hkVector4(to.x, to.y, to.z, one);
 
-	auto collector = RayCollector();
-	collector.Reset();
-	collector.settingsCache = cache;
-
-	RE::bhkPickData pickData{};
-	pickData.rayInput = pickRayInput;
-	pickData.ray = RE::hkVector4(to.x, to.y, to.z, one);
-	pickData.rayHitCollectorA8 = reinterpret_cast<RE::hkpClosestRayHitCollector*>(&collector);
+	cache->RayCollector->Reset();
 
 	const auto ply = RE::PlayerCharacter::GetSingleton();
 	auto cell = ply->GetParentCell();
 	if (!cell)
 		return {};
-
-	if (ply->loadedData && ply->loadedData->data3D)
-		collector.AddFilter(ply->loadedData->data3D.get());
 
 	RayCollector::HitResult best{};
 	best.hitFraction = 1.0f;
@@ -187,17 +198,57 @@ Raycast::RayResult Raycast::hkpCastRay(const glm::vec4& start, const glm::vec4& 
 		shownError = false;
 	}
 
+	RE::hkAabb aabb;
+
+	aabb.min = pickRayInput.from;
+	aabb.max = pickRayInput.to;
+
+	auto physicsWorld = cell->GetbhkWorld();
+
+	auto hkpWorld = physicsWorld ? physicsWorld->GetWorld1() : nullptr;
+
+	if (!AabbPhantom) {
+		AabbPhantom = RE::malloc<RE::hkpAabbPhantom>(0x130);
+
+		using _createhkpAABBPhantom = void (*)(RE::hkpAabbPhantom*, RE::hkAabb*, uint32_t);
+		REL::Relocation<_createhkpAABBPhantom> CreatehkpAABBPhantom(RELOCATION_ID(60170, 60938));
+
+		CreatehkpAABBPhantom(AabbPhantom, &aabb, 0);
+	}
+
+	if (!AabbPhantom->world) {
+		physicsWorld->worldLock.LockForWrite();
+		hkpWorld->AddPhantom(AabbPhantom);
+		physicsWorld->worldLock.UnlockForWrite();
+	}
+
 	try {
 		auto physicsWorld = cell->GetbhkWorld();
 		if (physicsWorld) {
-			physicsWorld->PickObject(pickData);
+			physicsWorld->worldLock.LockForWrite();
+
+			using _setAabb = void (*)(RE::hkpAabbPhantom*, RE::hkAabb*);
+			REL::Relocation<_setAabb> SetAabb(RELOCATION_ID(60181, 60949));
+
+			SetAabb(AabbPhantom, &aabb);
+
+			physicsWorld->worldLock.UnlockForWrite();
+
+			physicsWorld->worldLock.LockForRead();
+
+			using _RayCastAABB = void (*)(RE::hkpAabbPhantom*, RE::hkpWorldRayCastInput*, RE::hkpRayHitCollector*);
+			REL::Relocation<_RayCastAABB> raycastAABBPhantom(RELOCATION_ID(60173, 60941));
+
+			raycastAABBPhantom(AabbPhantom, &pickRayInput, cache->RayCollector.get());
+
+			physicsWorld->worldLock.UnlockForRead();
 		}
 	} catch (...) {
 		HandleErrorMessage();
 		return result;
 	}
 
-	for (auto& hit : collector.GetHits()) {
+	for (auto& hit : cache->RayCollector->GetHits()) {
 		const auto pos = dif * hit.hitFraction + start;
 		if (best.body == nullptr) {
 			best = hit;
@@ -214,7 +265,8 @@ Raycast::RayResult Raycast::hkpCastRay(const glm::vec4& start, const glm::vec4& 
 		}
 	}
 
-	result.hitArray = collector.GetHits();
+	result.hitArray = cache->RayCollector->GetHits();
+
 	result.hitPos = bestPos;
 
 	if (!best.body)
@@ -254,13 +306,12 @@ Raycast::RayResult Raycast::hkpPhantomCast(glm::vec4& start, const glm::vec4& en
 	RE::hkTransform transform;
 	transform.translation = RE::hkVector4(0.0f, 0.0f, 0.0f, 1.0f);
 
-	auto vecBottom = RE::hkVector4(0.0f, 0.0f, 0.0f, 1.0f);
-	auto vecTop = RE::hkVector4(0.0f, 0.0f, dif.z * hkpScale, 1.0f);
+	auto vecBottom = RE::NiPoint3(0.0f, 0.0f, 0.0f);
+	auto vecTop = RE::NiPoint3(0.0f, 0.0f, dif.z);
 
 	float radius = 20.0f;
 	float widthX = 20.0f;
 	float widthY = 20.0f;
-	int shapeType = 0;
 
 	if (param) {
 		auto grassForm = RE::TESForm::LookupByID<RE::TESGrass>(param->grassFormID);
@@ -278,61 +329,97 @@ Raycast::RayResult Raycast::hkpPhantomCast(glm::vec4& start, const glm::vec4& en
 	if (GrassControl::Config::RayCastWidth > 0.0f) {
 		widthX = GrassControl::Config::RayCastWidth * 0.5f;
 		widthY = GrassControl::Config::RayCastWidth * 0.5f;
+		radius = GrassControl::Config::RayCastWidth * 0.5f;
 	}
 
 	bool newShape = false;
 	newShape = std::abs(oldRadius - radius) > 1.0f;
 	if (newShape) {
-
-		bhkWorld->worldLock.LockForWrite();
-
 		if (GrassControl::Config::RayCastMode == 1 && currentShape) {
-			Memory::Internal::write<RE::hkVector4>(reinterpret_cast<uintptr_t>(currentShape) + 0x28, radius * hkpScale);  // Set Radius
-			Memory::Internal::write<RE::hkVector4>(reinterpret_cast<uintptr_t>(currentShape) + 0x40, vecTop);             // Set Top Vertex
+			Memory::Internal::write<RE::hkVector4>(reinterpret_cast<uintptr_t>(currentShape->referencedObject.get()) + 0x28, radius * hkpScale);  // Set Radius
+			Memory::Internal::write<RE::hkVector4>(reinterpret_cast<uintptr_t>(currentShape->referencedObject.get()) + 0x40, vecTop);             // Set Top Vertex
 		} else if (currentShape) {
 			auto halfExtents = RE::hkVector4(widthX, widthY, dif.z * hkpScale / 2.0f, 0.0f);
-			Memory::Internal::write<RE::hkVector4>(reinterpret_cast<uintptr_t>(currentShape) + 0x30, halfExtents);  // Set halfExtent
+			Memory::Internal::write<RE::hkVector4>(reinterpret_cast<uintptr_t>(currentShape->referencedObject.get()) + 0x30, halfExtents);  // Set halfExtent
 		}
-
-		bhkWorld->worldLock.UnlockForWrite();
 
 		oldRadius = radius;
 	}
 
 	if (!currentShape) {
-		currentShape = RE::malloc<RE::hkpShape>(0x70);
+		currentShape = RE::malloc<RE::bhkShape>(0x28);
 		if (!currentShape)
 			return {};
 	}
 
 	if (!createdShape) {
 		if (GrassControl::Config::RayCastMode == 1) {
-			shapeType = Memory::Internal::read<int>(RELOCATION_ID(511265, 385180).address());
+			using createCapsuleShape_t = RE::bhkShape* (*)(RE::bhkShape*, RE::NiPoint3&, RE::NiPoint3&, float);
+			REL::Relocation<createCapsuleShape_t> createCapsuleShape{ RELOCATION_ID(76924, 78799) };
 
-			using createCylinderShape_t = RE::hkpShape* (*)(RE::hkpShape*, RE::hkVector4&, RE::hkVector4&, float, int);
-			REL::Relocation<createCylinderShape_t> createCylinderShape{ RELOCATION_ID(59971, 60720) };
+			currentShape = createCapsuleShape(currentShape, vecBottom, vecTop, radius);
 
-			currentShape = createCylinderShape(currentShape, vecBottom, vecTop, radius * hkpScale, shapeType);
 		} else {
-			shapeType = Memory::Internal::read<int>(RELOCATION_ID(525125, 411600).address());
+			float halfExtents[4] = { widthX, widthY, dif.z / 2.0f, 0.0f };
 
-			auto halfExtents = RE::hkVector4(widthX, widthY, dif.z * hkpScale / 2.0f, 0.0f);
+			using createBoxShape_t = RE::bhkShape* (*)(RE::bhkShape*, float*);
+			REL::Relocation<createBoxShape_t> createBoxShape{ RELOCATION_ID(76945, 78820) };
 
-			using createBoxShape_t = RE::hkpShape* (*)(RE::hkpShape*, RE::hkVector4&, float);
-			REL::Relocation<createBoxShape_t> createBoxShape{ RELOCATION_ID(59603, 60287) };
-
-			currentShape = createBoxShape(currentShape, halfExtents, shapeType);
+			currentShape = createBoxShape(currentShape, halfExtents);
 		}
+
 		createdShape = true;
 	}
+
+	/*
+	auto phantomInstance = currentPhantom.load(std::memory_order_acquire);
+
+	if (!phantomInstance || !phantomInstance->referencedObject) {
+		auto shapeParam = new bhkSimpleShapePhantomParam();
+		shapeParam->unk10 = 2;
+		shapeParam->unk18 = nullptr;
+		shapeParam->unk20 = 0;
+		shapeParam->unk24 = 0x80000000;
+		shapeParam->transform30 = transform;
+		shapeParam->HavokObject = currentShape->referencedObject;
+		shapeParam->collisionFlags = 0;
+
+		using createSimpleShapePhantom_t = RE::bhkShapePhantom* (*)(RE::bhkShapePhantom*, bhkSimpleShapePhantomParam*);
+		REL::Relocation<createSimpleShapePhantom_t> createSimpleShapePhantom{ RELOCATION_ID(37690, 78778) };
+		auto rawPhantom = RE::malloc<RE::bhkShapePhantom>(0x30);
+		if (!rawPhantom)
+			return {};
+
+		rawPhantom = createSimpleShapePhantom(rawPhantom, shapeParam);
+
+		delete shapeParam;
+
+		if (rawPhantom && rawPhantom->referencedObject) {
+			rawPhantom->IncRefCount();
+			rawPhantom->MoveToWorld(bhkWorld);
+		} else {
+			RE::free(rawPhantom);
+			return {};
+		}
+
+		currentPhantom.store(rawPhantom, std::memory_order_release);
+		phantomInstance = currentPhantom.load(std::memory_order_acquire);
+
+		if (!cache->phantomCreated) {
+			cache->phantomCreated = true;
+			cache->lastRaycastTime = GetTickCount64();
+		}
+	}
+	*/
 
 	if (!phantom) {
 		using createSimpleShapePhantom_t = RE::hkpShapePhantom* (*)(RE::hkpShapePhantom*, RE::hkpShape*, const RE::hkTransform&, uint32_t);
 		REL::Relocation<createSimpleShapePhantom_t> createSimpleShapePhantom{ RELOCATION_ID(60675, 61535) };
 		phantom = RE::malloc<RE::hkpShapePhantom>(0x1C0);
+
 		if (!phantom)
 			return {};
-		phantom = createSimpleShapePhantom(phantom, currentShape, transform, 0);
+		phantom = createSimpleShapePhantom(phantom, reinterpret_cast<RE::hkpShape*>(currentShape->referencedObject.get()), transform, 0);
 
 		RE::hkpPhantom* returnPhantom = nullptr;
 		if (phantom->GetShape()) {
@@ -352,18 +439,26 @@ Raycast::RayResult Raycast::hkpPhantomCast(glm::vec4& start, const glm::vec4& en
 		bhkWorld->worldLock.UnlockForWrite();
 	}
 
-	bhkWorld->worldLock.LockForWrite();
+	/*
+	if (phantomInstance->GetWorld1() != hkWorld) {
+		phantomInstance->RemoveFromCurrentWorld();
+		phantomInstance->MoveToWorld(bhkWorld);
+	}
+	*/
 
 	RayResult result;
 
-	auto collector = CdBodyPairCollector();
-	collector.settingsCache = cache;
-	collector.Reset();
+	cache->BodyPairCollector->Reset();
 
 	if (!phantom->GetShape()) {
-		bhkWorld->worldLock.UnlockForWrite();
 		return result;
 	}
+
+	/*
+	if (!phantomInstance->referencedObject) {
+		return result;
+	}
+	*/
 
 	if (!lastCell) {
 		lastCell = cell;
@@ -373,25 +468,48 @@ Raycast::RayResult Raycast::hkpPhantomCast(glm::vec4& start, const glm::vec4& en
 		shownError = false;
 	}
 
-	bhkWorld->worldLock.LockForRead();
+	bhkWorld->worldLock.LockForWrite();
+
+	using SetPosition_t = void (*)(RE::hkpShapePhantom*, RE::hkVector4);
+	REL::Relocation<SetPosition_t> SetPosition{ RELOCATION_ID(60791, 61653) };
+	SetPosition(phantom, vecA);
+
+	bhkWorld->worldLock.UnlockForWrite();
 
 	try {
-		using SetPosition_t = void (*)(RE::hkpShapePhantom*, RE::hkVector4);
-		REL::Relocation<SetPosition_t> SetPosition{ RELOCATION_ID(60791, 61653) };
-		SetPosition(phantom, vecA);
+		/*
+		using SetPositionSimpleShapePhantom_t = void (*)(RE::bhkShapePhantom*, RE::hkVector4);
+		REL::Relocation<SetPositionSimpleShapePhantom_t> SetPosition{ RELOCATION_ID(76895, 78771) };
+		SetPosition(phantomInstance, vecA);
+		*/
+
+		bhkWorld->worldLock.LockForRead();
 
 		using GetPenetrations_t = void (*)(RE::hkpShapePhantom*, RE::hkpCdBodyPairCollector*, RE::hkpCollisionInput*);
 		REL::Relocation<GetPenetrations_t> GetPenetrations{ RELOCATION_ID(60682, 61543) };
 
-		GetPenetrations(phantom, reinterpret_cast<RE::hkpCdBodyPairCollector*>(&collector), nullptr);
+		GetPenetrations(phantom, reinterpret_cast<RE::hkpCdBodyPairCollector*>(cache->BodyPairCollector.get()), nullptr);
+
+		/*
+		using GetPenetrations_t = void (*)(RE::hkpShapePhantom*, RE::hkpCdBodyPairCollector*, RE::hkpCollisionInput*);
+		REL::Relocation<GetPenetrations_t> GetPenetrations{ RELOCATION_ID(60682, 61543) };
+
+		if (phantomInstance->referencedObject && hkWorld->collisionInput) {
+			auto hkpPhantom = reinterpret_cast<RE::hkpShapePhantom*>(phantomInstance->referencedObject.get());
+
+			GetPenetrations(hkpPhantom, reinterpret_cast<RE::hkpCdBodyPairCollector*>(cache->BodyPairCollector.get()), nullptr);
+		}
+		*/
+
 	} catch (...) {
 		HandleErrorMessage();
 	}
 
 	bhkWorld->worldLock.UnlockForRead();
-	bhkWorld->worldLock.UnlockForWrite();
 
-	result.cdBodyHitArray = collector.GetHits();
+	result.cdBodyHitArray = cache->BodyPairCollector->GetHits();
+
+	cache->lastRaycastTime = GetTickCount64();
 
 	return result;
 }
@@ -410,18 +528,41 @@ namespace GrassControl
 			}
 		}
 		this->RaycastMask = mask;
+
+		this->RayCollector = std::make_unique<Raycast::RayCollector>();
+		this->RayCollector->settingsCache = this;
+
+		this->BodyPairCollector = std::make_unique<Raycast::CdBodyPairCollector>();
+		this->BodyPairCollector->settingsCache = this;
 	}
 
 	bool RaycastHelper::CanPlaceGrass(RE::TESObjectLAND* land, const float x, const float y, const float z, RE::GrassParam* param) const
 	{
+		static thread_local std::string cachedCellName;
+		static thread_local RE::FormID cachedCellID = 0;
+
 		auto cell = land->GetSaveParentCell();
 
 		if (cell == nullptr) {
 			return true;
 		}
 
+		if (cell->formID != cachedCellID) {
+			cachedCellID = cell->formID;
+			cachedCellName = cell->GetFormEditorID() ? cell->GetFormEditorID() : cell->GetName();
+		}
+
 		// Currently not dealing with this.
 		if (cell->IsInteriorCell() || !cell->IsAttached()) {
+			/*
+			auto phantomInstance = Raycast::currentPhantom.load(std::memory_order_acquire);
+
+			if (phantomInstance) {
+				phantomInstance->RemoveFromCurrentWorld();
+				phantomInstance = nullptr;
+			}
+			*/
+
 			return true;
 		}
 
@@ -443,16 +584,15 @@ namespace GrassControl
 				}
 
 				for (auto& txt : txts) {
-					if (txt && this->Textures->Contains(txt->GetFormID())) {
-						logger::debug("Detected hit with landscape texture in {} with 0x{:x}",
-							cell->GetFormEditorID() ? cell->GetFormEditorID() : cell->GetName(), txt->GetFormID());
+					if (txt && this->Textures->Contains(cachedCellID)) {
+						logger::debug("Detected hit with landscape texture in {} with 0x{:x}", cachedCellName, txt->GetFormID());
 						return false;
 					}
 				}
 			} else {
 				if (auto txt = tes->GetLandTexture(RE::NiPoint3{ x, y, z })) {
-					if (this->Textures->Contains(txt->GetFormID())) {
-						logger::debug("Detected hit with landscape texture in {} with 0x{:x}", cell->GetFormEditorID() ? cell->GetFormEditorID() : cell->GetName(), txt->GetFormID());
+					if (this->Textures->Contains(cachedCellID)) {
+						logger::debug("Detected hit with landscape texture in {} with 0x{:x}", cachedCellName, txt->GetFormID());
 						return false;
 					}
 				}
@@ -468,12 +608,10 @@ namespace GrassControl
 			rs = Raycast::hkpPhantomCast(begin, end, cell, param, this);
 
 			if (Config::DebugLogEnable) {
-				for (auto& [body] : rs.cdBodyHitArray) {
-					auto rsTESForm = GrassControl::RaycastHelper::GetRaycastHitBaseForm(body);
-
+				for (auto& [body, hitObject] : rs.cdBodyHitArray) {
 					auto sTemplate = fmt::runtime("{} {}(0x{:x})");
-					auto cellName = format(sTemplate, "cell", cell->GetFormEditorID() ? cell->GetFormEditorID() : cell->GetName(), cell->formID);
-					auto hitObjectName = rsTESForm ? format(sTemplate, "with", rsTESForm->GetFormEditorID() ? rsTESForm->GetFormEditorID() : rsTESForm->GetName(), rsTESForm->formID) : "";
+					auto cellName = format(sTemplate, "cell", cachedCellName, cell->formID);
+					auto hitObjectName = hitObject ? format(sTemplate, "with", hitObject->GetFormEditorID() ? hitObject->GetFormEditorID() : hitObject->GetName(), hitObject->formID) : "";
 					logger::debug("{}({},{},{}) detected hit {}", cellName, x, y, z, hitObjectName);
 				}
 			}
@@ -484,16 +622,19 @@ namespace GrassControl
 		} else {
 			rs = Raycast::hkpCastRay(begin, end, this);
 
-			for (auto& [normal, hitFraction, body] : rs.hitArray) {
-				auto rsTESForm = GrassControl::RaycastHelper::GetRaycastHitBaseForm(body);
+			if (Config::DebugLogEnable) {
+				for (auto& [normal, hitFraction, body] : rs.hitArray) {
+					auto rsTESForm = GetRaycastHitBaseForm(body);
 
-				auto sTemplate = fmt::runtime("{} {}(0x{:x})");
-				auto cellName = format(sTemplate, "cell", cell->GetFormEditorID() ? cell->GetFormEditorID() : cell->GetName(), cell->formID);
-				auto hitObjectName = rsTESForm ? format(sTemplate, "with", rsTESForm->GetFormEditorID() ? rsTESForm->GetFormEditorID() : rsTESForm->GetName(), rsTESForm->formID) : "";
-				logger::debug("{}({},{},{}) detected hit {}", cellName, x, y, z, hitObjectName);
-
-				return false;
+					auto sTemplate = fmt::runtime("{} {}(0x{:x})");
+					auto cellName = format(sTemplate, "cell", cachedCellName, cell->formID);
+					auto hitObjectName = rsTESForm ? format(sTemplate, "with", rsTESForm->GetFormEditorID() ? rsTESForm->GetFormEditorID() : rsTESForm->GetName(), rsTESForm->formID) : "";
+					logger::debug("{}({},{},{}) detected hit {}", cellName, x, y, z, hitObjectName);
+				}
 			}
+
+			if (!rs.hitArray.empty())
+				return false;
 		}
 
 		return true;
@@ -501,11 +642,19 @@ namespace GrassControl
 
 	float RaycastHelper::CreateGrassCliff(const float x, const float y, const float z, glm::vec3& Normal, RE::GrassParam* param) const
 	{
+		static thread_local std::string cachedCellName;
+		static thread_local RE::FormID cachedCellID = 0;
+
 		RE::PlayerCharacter* player = RE::PlayerCharacter::GetSingleton();
 		auto cell = player->GetParentCell();
 
 		if (cell == nullptr) {
 			return z;
+		}
+
+		if (cell->formID != cachedCellID) {
+			cachedCellID = cell->formID;
+			cachedCellName = cell->GetFormEditorID() ? cell->GetFormEditorID() : cell->GetName();
 		}
 
 		// Currently not dealing with this.
@@ -527,7 +676,7 @@ namespace GrassControl
 		auto begin = glm::vec4{ x, y, z, 0.0f };
 		auto end = glm::vec4{ x, y, z + 300.0f, 0.0f };
 
-		auto rs = Raycast::hkpCastRay(begin, end, this);
+		auto rs = Raycast::hkpCastRay(begin, end, this, true);
 		float retn = z;
 
 		if (!IsCliffObject(rs))
@@ -583,16 +732,16 @@ namespace GrassControl
 		}
 
 		for (int i = 0; i < ptsBegin.size(); i++) {
-			rs = Raycast::hkpCastRay(ptsBegin[i], ptsEnd[i], this);
+			rs = Raycast::hkpCastRay(ptsBegin[i], ptsEnd[i], this, true);
 
 			if (!this->Cliffs->Contains(GetRaycastHitBaseForm(rs))) {
 				return z;
 			}
 		}
 
-		if (retn != z) {
+		if (Config::DebugLogEnable && retn != z) {
 			auto sTemplate = fmt::runtime("{} {}(0x{:x})");
-			auto cellName = fmt::format(sTemplate, "cell", cell->GetFormEditorID() ? cell->GetFormEditorID() : cell->GetName(), cell->formID);
+			auto cellName = fmt::format(sTemplate, "cell", cachedCellName, cell->formID);
 			auto rsTESForm = GetRaycastHitBaseForm(rs);
 			auto hitObjectName = rsTESForm ? fmt::format(sTemplate, "onto", rsTESForm->GetFormEditorID() ? rsTESForm->GetFormEditorID() : rsTESForm->GetName(), rsTESForm->formID) : "";
 			logger::debug("{}({},{},{}) moved grass patch {}. New height is {} and new normal (up) direction is ({},{},{})", cellName, x, y, z, hitObjectName, retn, Normal.x, Normal.y, Normal.z);
@@ -649,5 +798,23 @@ namespace GrassControl
 	bool RaycastHelper::IsCliffObject(const Raycast::RayResult& r) const
 	{
 		return this->Cliffs->Contains(GetRaycastHitBaseForm(r));
+	}
+
+	void RaycastHelper::CheckInactivePhantom() const
+	{
+		uint64_t last = InterlockedCompareExchange64(&lastRaycastTime, 0, 0);
+		uint64_t now = GetTickCount64();
+
+		if (now - last < 60000) {
+			return;
+		}
+
+		if (auto phantom = Raycast::currentPhantom.load(std::memory_order_acquire)) {
+			if (phantom->GetWorld1()) {
+				phantom->RemoveFromCurrentWorld();
+			}
+		}
+
+		phantomCreated = false;
 	}
 }

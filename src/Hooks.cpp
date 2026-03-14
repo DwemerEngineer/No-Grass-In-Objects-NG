@@ -68,6 +68,9 @@ namespace GrassControl
 			auto gf = std::make_unique<GidFileGenerationTask>();
 			GidFileGenerationTask::cur_instance = std::move(gf);
 		}
+
+		//if (RaycastSettingsCache->phantomCreated)
+			//RaycastSettingsCache->CheckInactivePhantom();
 	}
 
 	void GrassControlPlugin::OnMainMenuOpen()
@@ -370,7 +373,6 @@ namespace GrassControl
 		}
 
 		if (Config::EnsureMaxGrassTypesPerTextureSetting > 0) {
-
 			auto addr = RELOCATION_ID(18342, 18758).address() + REL::Relocate(0xD63 - 0xCF0, 0x68);
 
 			uint32_t max = std::max(Config::EnsureMaxGrassTypesPerTextureSetting, Memory::Internal::read<int>(addr_MaxGrassPerTexture + 8));

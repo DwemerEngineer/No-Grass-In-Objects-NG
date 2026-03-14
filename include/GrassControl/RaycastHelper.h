@@ -6,6 +6,65 @@
 #include <string>
 #include <vector>
 
+namespace RE
+{
+	class hkpAabbPhantom : public hkpPhantom
+	{
+	public:
+		hkAabb aabb;
+		hkArray<hkpCollidable*> overlappingCollidables;
+		bool orderDirty;
+		char pad121[15];
+	};
+	static_assert(sizeof(hkpAabbPhantom) == 0x130);
+
+	struct hkpShapeRayCastInput
+	{
+		hkVector4 from;                                           // 00
+		hkVector4 to;                                             // 10
+		std::uint32_t filterInfo{ 0 };                            // 20
+		char pad24[4];                                            // 24
+		hkpRayShapeCollectionFilter* rayShapeCollectionFilter{};  // 28
+	};
+	static_assert(sizeof(hkpShapeRayCastInput) == 0x30);
+
+	class hkpWorldRayCaster : public hkpBroadPhaseCastCollector
+	{
+	public:
+		inline static constexpr auto RTTI = RTTI_hkpWorldRayCaster;
+		inline static constexpr auto VTABLE = VTABLE_hkpWorldRayCaster;
+
+		~hkpWorldRayCaster() override = default;
+
+		float AddBroadPhaseHandle(const hkpBroadPhaseHandle* a_broadphaseHandle, std::int32_t a_castIndex) override;  // 01
+
+		hkpWorldRayCastInput* input;        // 08
+		hkpRayCollidableFilter* filter;     // 10
+		hkpRayHitCollector* collectorBase;  // 18
+		std::int32_t collectorStriding;     // 20
+		char pad24[12];                     // 24
+		hkpShapeRayCastInput shapeInput;    // 30
+	};
+	static_assert(sizeof(hkpWorldRayCaster) == 0x60);
+
+	class hkpSimpleWorldRayCaster : public hkpBroadPhaseCastCollector
+	{
+	public:
+		inline static constexpr auto RTTI = RTTI_hkpSimpleWorldRayCaster;
+		inline static constexpr auto VTABLE = VTABLE_hkpSimpleWorldRayCaster;
+
+		~hkpSimpleWorldRayCaster() override = default;
+
+		float AddBroadPhaseHandle(const hkpBroadPhaseHandle* a_broadphaseHandle, std::int32_t a_castIndex) override;  // 01
+
+		hkpWorldRayCastInput* input;        // 08
+		hkpRayCollidableFilter* filter;     // 10
+		hkpWorldRayCastOutput* result;
+		hkpShapeRayCastInput shapeInput;    // 30
+	};
+	static_assert(sizeof(hkpSimpleWorldRayCaster) == 0x50);
+}
+
 namespace GrassControl
 {
 	class RaycastHelper;
@@ -13,6 +72,20 @@ namespace GrassControl
 
 namespace Raycast
 {
+	struct bhkSimpleShapePhantomParam  // sizeof=0x70
+	{
+		uint32_t collisionFlags;
+		RE::hkRefPtr<RE::hkReferencedObject> HavokObject;
+		char unk10;
+		void* unk18;
+		int unk20;
+		int unk24;
+		int unk28;
+		int unk2C;
+		RE::hkTransform transform30;
+	};
+	static_assert(sizeof(bhkSimpleShapePhantomParam) == 0x70);
+
 	struct hkpGenericShapeData
 	{
 		intptr_t* unk;
@@ -31,6 +104,7 @@ namespace Raycast
 		struct HitResult
 		{
 			const RE::hkpCdBody* body;
+			RE::TESObjectREFR* hitObject;
 
 			RE::NiAVObject* getAVObject();
 		};
@@ -39,11 +113,6 @@ namespace Raycast
 		virtual ~CdBodyPairCollector() = default;
 
 		virtual void addCdBodyPair(const RE::hkpCdBody& bodyA, const RE::hkpCdBody& bodyB);
-
-		void AddFilter(const RE::NiAVObject* obj) noexcept
-		{
-			objectFilter.push_back(obj);
-		}
 
 		const std::vector<HitResult>& GetHits();
 
@@ -54,13 +123,12 @@ namespace Raycast
 		char pad09[7];
 
 		std::vector<HitResult> hits{};
-		std::vector<const RE::NiAVObject*> objectFilter{};
 
 	public:
 		const GrassControl::RaycastHelper* settingsCache = nullptr;
 	};
 
-	class RayCollector
+	class RayCollector : public RE::hkpClosestRayHitCollector
 	{
 	public:
 		struct HitResult
@@ -73,26 +141,16 @@ namespace Raycast
 		};
 
 		RayCollector();
-		~RayCollector() = default;
+		~RayCollector() override = default;
 
-		virtual void AddRayHit(const RE::hkpCdBody& body, const RE::hkpShapeRayCastCollectorOutput& hitInfo);
-
-		void AddFilter(const RE::NiAVObject* obj) noexcept
-		{
-			objectFilter.push_back(obj);
-		}
+		void AddRayHit(const RE::hkpCdBody& body, const RE::hkpShapeRayCastCollectorOutput& hitInfo) override;
 
 		const std::vector<HitResult>& GetHits();
 
 		void Reset();
 
 	private:
-		float earlyOutHitFraction{ 1.0f };  // 08
-		std::uint32_t pad0C{};
-		RE::hkpWorldRayCastOutput rayHit;  // 10
-
 		std::vector<HitResult> hits{};
-		std::vector<const RE::NiAVObject*> objectFilter{};
 
 	public:
 		const GrassControl::RaycastHelper* settingsCache = nullptr;
@@ -131,13 +189,15 @@ namespace Raycast
 	//	RayResult:
 	//		A structure holding the results of the ray cast.
 	//		If the ray hit something, result.hit will be true.
-	RayResult hkpCastRay(const glm::vec4& start, const glm::vec4& end, const GrassControl::RaycastHelper* cache) noexcept;
+	RayResult hkpCastRay(const glm::vec4& start, const glm::vec4& end, const GrassControl::RaycastHelper* cache, bool forCliffs = false) noexcept;
 
 	RayResult hkpPhantomCast(glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL* cell, RE::GrassParam* param, const GrassControl::RaycastHelper* cache) noexcept;
 
+	inline std::atomic<RE::bhkShapePhantom*> currentPhantom = nullptr;
+
 	inline RE::hkpShapePhantom* phantom = nullptr;
 
-	inline RE::hkpShape* currentShape = nullptr;
+	inline RE::bhkShape* currentShape = nullptr;
 
 	inline bool createdShape = false;
 
@@ -148,6 +208,8 @@ namespace Raycast
 	inline bool shownError = false;
 
 	inline RE::TESObjectCELL* lastCell = nullptr;
+
+	inline RE::hkpAabbPhantom* AabbPhantom = nullptr;
 }
 
 namespace GrassControl
@@ -176,6 +238,14 @@ namespace GrassControl
 
 		std::unique_ptr<Util::CachedFormList> const Grasses;
 
+		std::unique_ptr<Raycast::RayCollector> RayCollector;
+
+		std::unique_ptr<Raycast::CdBodyPairCollector> BodyPairCollector;
+
+		mutable volatile int64_t lastRaycastTime = 0;
+
+		mutable bool phantomCreated = false;
+
 		bool CanPlaceGrass(RE::TESObjectLAND* land, float x, float y, float z, RE::GrassParam* param) const;
 		float CreateGrassCliff(float x, float y, float z, glm::vec3& Normal, RE::GrassParam* param) const;
 
@@ -184,6 +254,8 @@ namespace GrassControl
 		/// @return True if the predicate function returns true
 		static RE::TESForm* GetRaycastHitBaseForm(const Raycast::RayResult& r);
 		static RE::TESForm* GetRaycastHitBaseForm(const RE::hkpCdBody* body);
+
+		void CheckInactivePhantom() const;
 
 	private:
 		bool IsCliffObject(const Raycast::RayResult& r) const;
