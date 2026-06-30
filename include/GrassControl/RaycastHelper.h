@@ -93,7 +93,7 @@ namespace Raycast
 
 #pragma warning(pop)
 
-	void HandleErrorMessage();
+	void HandleErrorMessage(std::string_view errorSource);
 
 	// Cast a ray from 'start' to 'end', returning the first thing it hits
 	// This variant collides with pretty much any solid geometry
@@ -162,14 +162,8 @@ namespace GrassControl
 		mutable volatile int64_t lastPhantomTestTime = 0;
 		mutable volatile int64_t lastRaycastTime = 0;
 
-
-		mutable bool shapePhantomActive = false;
-		mutable bool aabbPhantomActive = false;
-
 		bool CanPlaceGrass(RE::TESObjectLAND* land, float x, float y, float z, RE::GrassParam* param, bool& hitCliff, bool& falseCliff) const;
 		float CreateGrassCliff(float x, float y, float z, glm::vec3& Normal, RE::GrassParam* param, bool& falseCliff) const;
-
-		void CheckInactivePhantoms() const;
 
 	private:
 		bool IsCliffObject(const Raycast::RayResult& r) const;

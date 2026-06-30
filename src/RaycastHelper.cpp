@@ -11,6 +11,7 @@ static void DeleteShapePhantom(RE::hkpSimpleShapePhantom* phantom)
 	try {
 		RE::free(phantom);
 	} catch (...) {
+		logger::error("Exception occurred while deleting shape phantom.");
 	}
 }
 
@@ -24,6 +25,7 @@ static void DeleteAabbPhantom(RE::hkpPhantom* phantom)
 	try {
 		RE::free(phantom);
 	} catch (...) {
+		logger::error("Exception occurred while deleting aabb phantom.");
 	}
 }
 
@@ -32,10 +34,10 @@ static std::shared_ptr<RE::hkpAabbPhantom> MakeAabbPhantomPtr(RE::hkpAabbPhantom
 	return std::shared_ptr<RE::hkpAabbPhantom>(phantom, DeleteAabbPhantom);
 }
 
-void Raycast::HandleErrorMessage()
+void Raycast::HandleErrorMessage(std::string_view errorSource)
 {
 	if (RaycastErrorCount < 20) {
-		logger::error("Exception occurred while attempting raycasting. Unless repeated within the same cell this unlikely to be a serious issue.");
+		logger::error("Exception occurred while {} during raycasting. Unless repeated within the same cell this unlikely to be a serious issue.", errorSource);
 		RaycastErrorCount++;
 	} else if (!shownError) {
 		RE::DebugMessageBox("NGIO has encountered more than 20 errors while attempting raycasting in this cell. There is likely an issue with your game, that could result in a crash. The cause is most likely a bad mesh, most likely with broken collision. Try using Sniff to locate whate mesh(es) could be bad. It is also recommended to check the mods that edit this cell for errors in SSEdit. Saving your game is recommended. If you do not experience crashes, this warning can be ignored and disabled in GrassControl.ini using the setting Ray-cast-error-message.");
@@ -80,7 +82,7 @@ void Raycast::RayCollector::AddRayHit(const RE::hkpCdBody& body, const RE::hkpSh
 			return;
 		}
 
-		if ((this->settingsCache->Cliffs && this->settingsCache->Cliffs->Contains(rsTESForm)) || this->settingsCache->cliffObjects.contains(rsTESForm->formID)) {
+		if ((this->settingsCache->Cliffs && this->settingsCache->Cliffs->Contains(rsTESForm)) || (rsTESForm && this->settingsCache->cliffObjects.contains(rsTESForm->formID))) {
 			if (ignoreCliff)
 				return;
 
@@ -128,7 +130,7 @@ void Raycast::CdBodyPairCollector::addCdBodyPair(const RE::hkpCdBody& bodyA, con
 			return;
 		}
 
-		if ((this->settingsCache->Cliffs && this->settingsCache->Cliffs->Contains(hitForm)) || this->settingsCache->cliffObjects.contains(hitForm->formID)) {
+		if ((this->settingsCache->Cliffs && hitForm && this->settingsCache->Cliffs->Contains(hitForm)) || (hitForm && this->settingsCache->cliffObjects.contains(hitForm->formID))) {
 			if (ignoreCliff)
 				return;
 
@@ -234,7 +236,6 @@ Raycast::RayResult Raycast::hkpCastRay(const glm::vec4& start, const glm::vec4& 
 		if (!returnPhantom)
 			return {};
 
-		cache->aabbPhantomActive = true;
 	}
 
 	physicsWorld->worldLock.LockForWrite();
@@ -253,8 +254,7 @@ Raycast::RayResult Raycast::hkpCastRay(const glm::vec4& start, const glm::vec4& 
 		raycastAABBPhantom(AabbPhantom.get(), &pickRayInput, cache->GetRayCollector());
 
 	} catch (...) {
-		HandleErrorMessage();
-		return result;
+		HandleErrorMessage("performing AABB raycast");
 	}
 
 	physicsWorld->worldLock.UnlockForRead();
@@ -411,8 +411,6 @@ Raycast::RayResult Raycast::hkpPhantomCast(glm::vec4& start, const glm::vec4& en
 			if (!returnPhantom)
 				return {};
 		}
-
-		cache->shapePhantomActive = true;
 	}
 
 	if (phantom->world != hkWorld) {
@@ -426,8 +424,6 @@ Raycast::RayResult Raycast::hkpPhantomCast(glm::vec4& start, const glm::vec4& en
 
 		if (!returnPhantom)
 			return {};
-
-		cache->shapePhantomActive = true;
 	}
 
 	RayResult result;
@@ -448,16 +444,25 @@ Raycast::RayResult Raycast::hkpPhantomCast(glm::vec4& start, const glm::vec4& en
 		shownError = false;
 	}
 
-	bhkWorld->worldLock.LockForWrite();
-	phantom->SetPosition(vecA);
+	try {
+		bhkWorld->worldLock.LockForWrite();
+		phantom->SetPosition(vecA);
+	} catch (...) {
+		HandleErrorMessage("setting phantom position");
+		hkWorld->RemovePhantom(Raycast::phantom.get());
+		phantom.reset();
+	}
+	
 	bhkWorld->worldLock.UnlockForWrite();
+	if (!phantom) {
+		return result;
+	}
 
 	try {
 		bhkWorld->worldLock.LockForRead();
 		phantom->GetPenetrations(*reinterpret_cast<RE::hkpCdBodyPairCollector*>(cache->GetBodyPairCollector()), nullptr);
-
 	} catch (...) {
-		HandleErrorMessage();
+		HandleErrorMessage("getting phantom penetrations");
 	}
 
 	bhkWorld->worldLock.UnlockForRead();
@@ -530,6 +535,18 @@ namespace GrassControl
 			cachedCellID = cell->formID;
 			auto name = cell->GetFormEditorID() ? cell->GetFormEditorID() : cell->GetName();
 			cachedCellName = name ? name : "Wilderness";
+
+			if (Raycast::phantom) {
+				auto hkpWorld = Raycast::phantom->world;
+				if (hkpWorld) {
+					auto bhkWorld = reinterpret_cast<RE::ahkpWorld*>(hkpWorld)->userData;
+
+					bhkWorld->worldLock.LockForWrite();
+					hkpWorld->RemovePhantom(Raycast::phantom.get());
+					Raycast::phantom.reset();
+					bhkWorld->worldLock.UnlockForWrite();
+				}
+			}
 		}
 
 		// Currently not dealing with this.
@@ -836,52 +853,5 @@ namespace GrassControl
 			return false;
 
 		return (this->Cliffs && this->Cliffs->Contains(baseForm)) || this->cliffObjects.contains(baseForm->formID);
-	}
-
-	void RaycastHelper::CheckInactivePhantoms() const
-	{
-		if (Raycast::phantom) {
-			uint64_t last = InterlockedCompareExchange64(&lastPhantomTestTime, 0, 0);
-			uint64_t now = GetTickCount64();
-
-			if (now - last < 60000) {
-				return;
-			}
-
-			if (Raycast::phantom->world) {
-				auto ahkpWorld = reinterpret_cast<RE::ahkpWorld*>(Raycast::phantom->world);
-				auto bhkWorld = ahkpWorld->userData;
-
-				bhkWorld->worldLock.LockForWrite();
-				Raycast::phantom->world->RemovePhantom(Raycast::phantom.get());
-				bhkWorld->worldLock.UnlockForWrite();
-
-				logger::debug("Removed shape phantom from world due to inactivity.");
-			}
-		}
-
-		shapePhantomActive = false;
-
-		if (Raycast::AabbPhantom) {
-			uint64_t last = InterlockedCompareExchange64(&lastRaycastTime, 0, 0);
-			uint64_t now = GetTickCount64();
-
-			if (now - last < 60000) {
-				return;
-			}
-
-			if (Raycast::AabbPhantom->world) {
-				auto ahkpWorld = reinterpret_cast<RE::ahkpWorld*>(Raycast::AabbPhantom->world);
-				auto bhkWorld = ahkpWorld->userData;
-
-				bhkWorld->worldLock.LockForWrite();
-				Raycast::AabbPhantom->world->RemovePhantom(Raycast::AabbPhantom.get());
-				bhkWorld->worldLock.UnlockForWrite();
-
-				logger::debug("Removed aabb phantom from world due to inactivity.");
-			}
-		}
-
-		aabbPhantomActive = false;
 	}
 }
