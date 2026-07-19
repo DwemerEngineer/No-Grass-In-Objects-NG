@@ -60,13 +60,15 @@ namespace GrassControl
 	void DistantGrass::CellInfoContainer::unsafe_ForeachWithState(const std::function<bool(std::shared_ptr<cell_info>)>& action)
 	{
 		try {
-			for (auto& [fst, snd] : this->map) {
+			std::erase_if(this->map, [&](const auto& pair) {
+				auto& [fst, snd] = pair;
 				if (fst != nullptr) {
 					if (!action(snd)) {
-						this->map.erase(fst);
+						return true;
 					}
 				}
-			}
+				return false; 
+			});
 		} catch (...) {
 			logger::error("Exception occurred while trying to erase cell from loaded reference map. Attempting to continue.");
 			//Terrible idea but fuck it. Erase keeps throwing a read access violation in Debug. Release should be fine, but just in case.
@@ -77,6 +79,8 @@ namespace GrassControl
 	std::shared_ptr<DistantGrass::cell_info> DistantGrass::CellInfoContainer::FindByCell(RE::TESObjectCELL* cell)
 	{
 		{
+			std::scoped_lock lock(cellMapMutex);
+
 			auto it = this->map.find(cell);
 			if (it != this->map.end()) {
 				return it->second;
@@ -131,10 +135,13 @@ namespace GrassControl
 					queueDelete.push_back({ key, val });
 				}
 			}
-		}
 
-		for (auto& pair : queueDelete) {
-			_DoUnload(pair);
+			for (auto& pair : queueDelete) {
+				bool erase = _DoUnload(pair.second);
+				if (erase) {
+					this->map.erase(pair.first);
+				}
+			}
 		}
 	}
 
@@ -147,9 +154,11 @@ namespace GrassControl
 		if (key.empty())
 			return;
 
-		std::shared_ptr<_cell_data> d;
 		{
 			std::scoped_lock lock(cellMapMutex);
+
+			std::shared_ptr<_cell_data> d;
+
 			if (!this->map.contains(key)) {
 				d = std::make_shared<_cell_data>();
 				this->map.insert_or_assign(key, d);
@@ -158,63 +167,60 @@ namespace GrassControl
 				d->Y = y;
 				d->WsId = ws != nullptr ? ws->formID : 0;
 			}
-		}
 
-		if (d == nullptr)
-			return;
-
-		{
-			std::scoped_lock lock(cellMapMutex);
-			if (d->State != _cell_data::_cell_states::None) {
+			if (d == nullptr)
 				return;
-			}
 
-			d->State = _cell_data::_cell_states::Loading;
-
-			if (d->DummyCell_Ptr == nullptr) {
-				char* tempPtr = nullptr;
-				if (REL::Relocate(false, REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_6_629)) {
-					tempPtr = new char[0x148];
-					memset(tempPtr, 0, 0x148);
-				} else {
-					tempPtr = new char[0x140];
-					memset(tempPtr, 0, 0x140);
+			{
+				if (d->State != _cell_data::_cell_states::None) {
+					return;
 				}
 
-				d->DummyCell_Ptr = reinterpret_cast<RE::TESObjectCELL*>(tempPtr);
+				d->State = _cell_data::_cell_states::Loading;
 
-				auto exteriorData = new RE::EXTERIOR_DATA();
-				exteriorData->cellX = x;
-				exteriorData->cellY = y;
+				if (d->DummyCell_Ptr == nullptr) {
+					char* tempPtr = nullptr;
+					if (REL::Relocate(false, REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_6_629)) {
+						tempPtr = new char[0x148];
+						memset(tempPtr, 0, 0x148);
+					} else {
+						tempPtr = new char[0x140];
+						memset(tempPtr, 0, 0x140);
+					}
 
-				d->DummyCell_Ptr->GetRuntimeData().cellData.exterior = exteriorData;
-				d->DummyCell_Ptr->GetRuntimeData().worldSpace = ws;
+					d->DummyCell_Ptr = reinterpret_cast<RE::TESObjectCELL*>(tempPtr);
+
+					auto exteriorData = new RE::EXTERIOR_DATA();
+					exteriorData->cellX = x;
+					exteriorData->cellY = y;
+
+					d->DummyCell_Ptr->GetRuntimeData().cellData.exterior = exteriorData;
+					d->DummyCell_Ptr->GetRuntimeData().worldSpace = ws;
+				}
+
+				using func_t = void (*)(RE::TESObjectCELL*);
+				REL::Relocation<func_t> func{ RELOCATION_ID(13137, 13277) };
+
+				func(d->DummyCell_Ptr);
 			}
-
-			using func_t = void (*)(RE::TESObjectCELL*);
-			REL::Relocation<func_t> func{ RELOCATION_ID(13137, 13277) };
-
-			func(d->DummyCell_Ptr);
 		}
 	}
 
-	void DistantGrass::LoadOnlyCellInfoContainer2::_DoUnload(std::pair<std::string, std::shared_ptr<_cell_data>>& dataPair)
+	bool DistantGrass::LoadOnlyCellInfoContainer2::_DoUnload(std::shared_ptr<_cell_data>& cellData)
 	{
-		if (dataPair.second == nullptr)
-			return;
+		if (cellData == nullptr)
+			return false;
 
 		{
 			std::scoped_lock lock(cellMapMutex);
 
-			auto cellData = dataPair.second;
-
 			if (!cellData || cellData->State == _cell_data::_cell_states::None || cellData->State == _cell_data::_cell_states::Abort) {
-				return;
+				return false;
 			}
 
 			if (cellData->State == _cell_data::_cell_states::Loading) {
 				cellData->State = _cell_data::_cell_states::Abort;
-				return;
+				return false;
 			}
 
 			if (cellData->DummyCell_Ptr) {
@@ -230,7 +236,7 @@ namespace GrassControl
 			cellData->DummyCell_Ptr = nullptr;
 			cellData->State = _cell_data::_cell_states::None;
 
-			map.erase(dataPair.first);
+			return true;
 		}
 	}
 
@@ -241,20 +247,22 @@ namespace GrassControl
 
 		std::string key = MakeKey(ws->editorID.c_str(), x, y);
 		std::shared_ptr<_cell_data> data;
+
 		{
 			std::scoped_lock lock(cellMapMutex);
+
 			if (!this->map.empty()) {
 				auto it = this->map.find(key);
 				data = it == this->map.end() ? nullptr : it->second;
 			}
+
+			if (data == nullptr)
+				return;
+
+			if (_DoUnload(data)) {
+				this->map.erase(key);
+			}
 		}
-
-		if (data == nullptr)
-			return;
-
-		std::pair<std::string, std::shared_ptr<_cell_data>> pair = std::make_pair(key, data);
-
-		_DoUnload(pair);
 	}
 
 	void DistantGrass::LoadOnlyCellInfoContainer2::_DoLoad(const RE::TESWorldSpace* ws, const int x, const int y) const
@@ -296,11 +304,10 @@ namespace GrassControl
 
 	void DistantGrass::LoadOnlyCellInfoContainer2::UnloadAll()
 	{
-		for (const auto& [key, val] : this->map) {
-			std::pair<std::string, std::shared_ptr<_cell_data>> pair = std::make_pair(key, val);
-
-			_DoUnload(pair);
+		for (auto& pair : this->map) {
+			_DoUnload(pair.second);
 		}
+
 		this->map.clear();
 	}
 
@@ -508,78 +515,6 @@ namespace GrassControl
 			patch5.ready();
 
 			trampoline.write_branch<5>(addr, trampoline.allocate(patch5));
-		}
-
-		// Fix weird shape selection.
-		// Vanilla game groups shape selection by 12 x 12 cells, we want a shape per cell.
-		if (!AE) {
-			addr = RELOCATION_ID(15204, 15372).address() + (0x5005 - 0x4D1C);
-			struct Patch6 : CodeGenerator
-			{
-				Patch6(uintptr_t a_target)
-				{
-					Label retnLabel;
-
-					mov(r8d, ptr[rsp + 0x40]);
-					mov(r9d, ptr[rsp + 0x3C]);
-
-					jmp(ptr[rip + retnLabel]);
-
-					L(retnLabel);
-					dq(a_target + 0x9);
-				}
-			};
-			Patch6 patch6(addr);
-			patch6.ready();
-
-			REL::safe_write(addr + 5, REL::NOP4, 4);
-			trampoline.write_branch<5>(addr, trampoline.allocate(patch6));
-		}
-
-		addr = RELOCATION_ID(15205, 15373).address() + REL::Relocate(0x617, 0x583);
-		struct Patch7 : CodeGenerator
-		{
-			Patch7(uintptr_t a_target)
-			{
-				Label retnLabel;
-
-				mov(r8d, ptr[rsp + 0x38]);
-				mov(r9d, ptr[rsp + 0x3C]);
-
-				jmp(ptr[rip + retnLabel]);
-
-				L(retnLabel);
-				dq(a_target + 0x8);
-			}
-		};
-		Patch7 patch7(addr);
-		patch7.ready();
-
-		REL::safe_write(addr + 5, REL::NOP3, 3);
-		trampoline.write_branch<5>(addr, trampoline.allocate(patch7));
-
-		// Some reason in AE doesn't generate a functional hook, using a thunk instead should work the same
-		if (!AE) {
-			addr = RELOCATION_ID(15206, 15374).address() + (0x645C - 0x620D);
-			struct Patch8 : CodeGenerator
-			{
-				Patch8(uintptr_t a_target)
-				{
-					Label retnLabel;
-
-					mov(r8d, ptr[rsp + 0x34]);
-					mov(r9d, ptr[rsp + 0x30]);
-
-					jmp(ptr[rip + retnLabel]);
-
-					L(retnLabel);
-					dq(a_target + 0x6);
-				}
-			};
-			Patch8 patch8(addr);
-			patch8.ready();
-
-			trampoline.write_branch<6>(addr, trampoline.allocate(patch8));
 		}
 
 		addr = RELOCATION_ID(15214, 15383).address() + REL::Relocate(0x78B7 - 0x7830, 0x7E);
@@ -942,47 +877,6 @@ namespace GrassControl
 				REL::safe_write(addr + 5, REL::NOP4, 4);
 				trampoline.write_branch<5>(addr, trampoline.allocate(patch16));
 			}
-
-			addr = RELOCATION_ID(13148, 13288).address() + REL::Relocate(0x29AF - 0x2220, 0x9A9);
-			struct Patch17 : CodeGenerator
-			{
-				Patch17(uintptr_t a_func, uintptr_t a_target)
-				{
-					Label TES_Sub;
-					Label funcLabel;
-					Label retnLabel;
-
-					call(ptr[rip + TES_Sub]);
-
-					push(rcx);
-					push(rdx);
-					mov(edx, ptr[rbx + 0xB0]);   // nowX
-					mov(r8d, ptr[rbx + 0xB4]);   // nowY
-					mov(rcx, ptr[rbx + 0x140]);  // ws
-
-					sub(rsp, 0x20);
-					call(ptr[rip + funcLabel]);
-					add(rsp, 0x20);
-
-					pop(rcx);
-					pop(rdx);
-
-					jmp(ptr[rip + retnLabel]);
-
-					L(TES_Sub);
-					dq(RELOCATION_ID(13213, 13362).address());
-
-					L(funcLabel);
-					dq(a_func);
-
-					L(retnLabel);
-					dq(a_target + 0x5);
-				}
-			};
-			Patch17 patch17(reinterpret_cast<uintptr_t>(UpdateGrassGridEnsureLoad), addr);
-			patch17.ready();
-
-			trampoline.write_branch<5>(addr, trampoline.allocate(patch17));
 		}
 	}
 
@@ -1096,34 +990,26 @@ namespace GrassControl
 		if (cell == nullptr)
 			return false;
 
-		uintptr_t task;
-		{
-			auto alloc = new char[0x10];  // RE::BSExtraData
-			Memory::Internal::write<uintptr_t>(reinterpret_cast<uintptr_t>(alloc), 0);
+		void* task = nullptr;
 
-			REL::Relocation<void (*)(const RE::ExtraDataList&, uintptr_t)> func{ RELOCATION_ID(11933, 12072) };
-			func(cell->extraList, reinterpret_cast<uintptr_t>(alloc));
+		REL::Relocation<void (*)(const RE::ExtraDataList&, void**)> GetAddGrassTask{ RELOCATION_ID(11933, 12072) };
+		GetAddGrassTask(cell->extraList, &task);
 
-			task = Memory::Internal::read<uintptr_t>(alloc);
-			delete[] alloc;
-		}
-
-		if (task == 0)
+		if (task == nullptr)
 			return false;
 
-		Memory::Internal::write<uint8_t>(task + 0x48, 1);
-		volatile uint64_t* TaskAdr = &task + 8;
-		if (InterlockedDecrement(TaskAdr) == 0) {
-			auto vtable = Memory::Internal::read<intptr_t>(task);
-			uintptr_t dtor = Memory::Internal::read<intptr_t>(vtable);
-			REL::Relocation<void (*)(intptr_t, int)> func{ dtor };
-
-			func(task, 1);
+		Memory::Internal::write<uint8_t>(reinterpret_cast<uintptr_t>(task) + 0x48, 1);
+		auto refPtr = reinterpret_cast<volatile long*>(reinterpret_cast<uintptr_t>(task) + 8);
+		if (InterlockedDecrement(refPtr) == 0) {
+			auto vtable = *reinterpret_cast<void***>(task);
+			using Dtor = void(__fastcall*)(void*, bool);
+			auto dtor = reinterpret_cast<Dtor>(vtable[0]);
+			dtor(task, 1);
 		}
 
-		REL::Relocation<void (*)(const RE::ExtraDataList&, int)> func{ RELOCATION_ID(11932, 12071) };
+		REL::Relocation<void (*)(const RE::ExtraDataList&, void*)> SetAddGrassTask{ RELOCATION_ID(11932, 12071) };
 
-		func(cell->extraList, 0);
+		SetAddGrassTask(cell->extraList, nullptr);
 
 		return true;
 	}
@@ -1334,6 +1220,9 @@ namespace GrassControl
 
 	void DistantGrass::UpdateGrassGridEnsureLoad(RE::TESWorldSpace* ws, const int nowX, const int nowY)
 	{
+		if (!Map)
+			return;
+
 		if (ws == nullptr)
 			return;
 
@@ -1343,11 +1232,7 @@ namespace GrassControl
 		int bigSide = std::max(grassRadius, uHalf);
 		bool canLoadGrass = Memory::Internal::read<uint8_t>(addr_AllowLoadFile + 8) != 0;
 
-		std::string wsName;
-		try {
-			wsName = ws->editorID.c_str();
-		} catch (...) {
-		}
+		std::string wsName = ws->editorID.c_str();
 
 		for (int x = nowX - bigSide; x <= nowX + bigSide; x++) {
 			for (int y = nowY - bigSide; y <= nowY + bigSide; y++) {

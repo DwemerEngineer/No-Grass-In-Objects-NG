@@ -387,8 +387,8 @@ namespace GrassControl
 		}
 
 		if (Config::ExtendGrassDistance) {
-			DistantGrass::InstallHooks();
 			DistantGrass::ReplaceGrassGrid(Config::OnlyLoadFromCache);
+			DistantGrass::InstallHooks();
 		}
 
 		if (Config::EnsureMaxGrassTypesPerTextureSetting > 0) {

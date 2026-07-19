@@ -28,7 +28,7 @@ namespace GrassControl
 
 		static void ReplaceGrassGrid(bool _loadOnly);
 
-		static inline bool _canUpdateGridNormal = false;
+		static inline std::atomic<bool> _canUpdateGridNormal = false;
 
 	private:
 		static inline bool load_only = false;
@@ -176,7 +176,7 @@ namespace GrassControl
 			void QueueLoad(RE::TESWorldSpace* ws, int x, int y);
 
 		private:
-			void _DoUnload(std::pair<std::string, std::shared_ptr<_cell_data>>& dataPair);
+			bool _DoUnload(std::shared_ptr<_cell_data>& cellData);
 
 		public:
 			void Unload(const RE::TESWorldSpace* ws, int x, int y);
@@ -217,11 +217,11 @@ namespace GrassControl
 				static inline REL::Relocation<decltype(thunk)> func;
 			};
 
-			struct CellSelection2
+			struct LoadGrassType
 			{
-				static void thunk(uintptr_t arg_1, uintptr_t arg_2, int arg_3, int arg_4, uintptr_t arg_5, uintptr_t arg_6)
+				static RE::BSMultiStreamInstanceTriShape* thunk(RE::BGSGrassManager* a_GrassManager, RE::GrassParam* a_grassParam, std::uint32_t a_CellXDivided, std::uint32_t a_CellYDivided, std::uint64_t* a_typeKey, RE::BSFixedString* a_name)
 				{
-					func(arg_1, arg_2, arg_3 * 12, arg_4 * 12, arg_5, arg_6);
+					return func(a_GrassManager, a_grassParam, a_CellXDivided * 12, a_CellYDivided * 12, a_typeKey, a_name);
 				}
 				static inline REL::Relocation<decltype(thunk)> func;
 			};
@@ -244,20 +244,35 @@ namespace GrassControl
 				static inline REL::Relocation<decltype(thunk)> func;
 			};
 
+			struct CallUpdateGrassGridEnsureLoad
+			{
+				static void thunk(RE::TES* a_TES, std::int32_t arg_2)
+				{
+					func(a_TES, arg_2);
+					UpdateGrassGridEnsureLoad(a_TES->GetRuntimeData2().worldSpace, a_TES->currentGridX, a_TES->currentGridY);
+				}
+				static inline REL::Relocation<decltype(thunk)> func;
+			};
+
 			static void Install()
 			{
 				if (Config::ExtendGrassDistance) {
 					stl::write_thunk_jump<WriteProgress>(RELOCATION_ID(13138, 13278).address() + REL::Relocate(0xF, 0xF));
 
-					if (REL::Module::IsAE()) {
-						stl::write_thunk_call<CellSelection>(RELOCATION_ID(15206, 15374).address() + REL::Relocate(0x645C - 0x6200, 0x645C - 0x6200));
-						stl::write_thunk_call<CellSelection>(RELOCATION_ID(15204, 15372).address() + REL::Relocate(0x2F5, 0x2F5));
-					}
+					// Fix weird shape selection.
+					// Vanilla game groups shape selection by 12 x 12 cells, we want a shape per cell.
+					stl::write_thunk_call<CellSelection>(RELOCATION_ID(15206, 15374).address() + REL::Relocate(0x645C - 0x6200, 0x645C - 0x6200));
+					stl::write_thunk_call<LoadGrassType>(RELOCATION_ID(15205, 15373).address() + REL::Relocate(0x617, 0x583));
+					stl::write_thunk_call<CellSelection>(RELOCATION_ID(15204, 15372).address() + REL::Relocate(0x2F5, 0x2F5));
 
 					stl::write_thunk_jump<UpdateGrassGridAddRemove>(RELOCATION_ID(13190, 13335).address());
 					Memory::Internal::write<uint8_t>(RELOCATION_ID(13190, 13335).address() + 5, 0xC3, true);
 					stl::write_thunk_jump<UpdateGrassGridAddRemove2>(RELOCATION_ID(13191, 13336).address());
 					Memory::Internal::write<uint8_t>(RELOCATION_ID(13191, 13336).address() + 5, 0xC3, true);
+
+					if (!load_only) {
+						stl::write_thunk_call<CallUpdateGrassGridEnsureLoad>(RELOCATION_ID(13148, 13288).address() + REL::Relocate(0x29AF - 0x2220, 0x9A9));
+					}
 				}
 			}
 		};
