@@ -41,10 +41,7 @@ namespace GrassControl
 		static bool DidApply;
 		static void CellLoadNow_Our(uintptr_t ws, int x, int y);
 
-		static inline uintptr_t addr_uGrids = RELOCATION_ID(501244, 359675).address();
-		static inline uintptr_t addr_AllowLoadFile = RELOCATION_ID(501125, 359439).address();
 		static inline uintptr_t addr_DataHandler = RELOCATION_ID(514141, 400269).address();
-		static inline uintptr_t addr_uLargeRef = RELOCATION_ID(501554, 360374).address();
 		static inline uintptr_t addr_QueueLoadCellUnkGlobal = RELOCATION_ID(514741, 400899).address();
 
 	public:
@@ -178,10 +175,16 @@ namespace GrassControl
 		private:
 			bool _DoUnload(std::shared_ptr<_cell_data>& cellData);
 
+			std::vector<RE::TESObjectCELL*> discardedCells{};
+
+			void _DiscardDummyCell(const std::shared_ptr<_cell_data>& cellData);
+
 		public:
+			void FreeDiscardedCells();
+
 			void Unload(const RE::TESWorldSpace* ws, int x, int y);
 
-			void _DoLoad(const RE::TESWorldSpace* ws, int x, int y) const;
+			void _DoLoad(const RE::TESWorldSpace* ws, int x, int y);
 
 			void UnloadAll();
 		};

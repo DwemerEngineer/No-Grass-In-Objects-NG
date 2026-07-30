@@ -71,8 +71,8 @@ namespace GrassControl
 			});
 		} catch (...) {
 			logger::error("Exception occurred while trying to erase cell from loaded reference map. Attempting to continue.");
-			//Terrible idea but fuck it. Erase keeps throwing a read access violation in Debug. Release should be fine, but just in case.
-			//Probably because of Debug Iterators
+			// Terrible idea but fuck it. Erase keeps throwing a read access violation in Debug. Release should be fine, but just in case.
+			// Probably because of Debug Iterators
 		}
 	}
 
@@ -125,7 +125,8 @@ namespace GrassControl
 		{
 			std::scoped_lock lock(cellMapMutex);
 			for (const auto& [key, val] : this->map) {
-				if (!val || val->State == _cell_data::_cell_states::None) {
+				if (!val) {
+					queueDelete.push_back({ key, val });
 					continue;
 				}
 
@@ -137,7 +138,8 @@ namespace GrassControl
 			}
 
 			for (auto& pair : queueDelete) {
-				bool erase = _DoUnload(pair.second);
+				// Remove cells with none state, so they are not kept in the map forever and treated as loaded cells.
+				bool erase = !pair.second || pair.second->State == _cell_data::_cell_states::None || _DoUnload(pair.second);
 				if (erase) {
 					this->map.erase(pair.first);
 				}
@@ -157,21 +159,25 @@ namespace GrassControl
 		{
 			std::scoped_lock lock(cellMapMutex);
 
-			std::shared_ptr<_cell_data> d;
+			auto it = this->map.find(key);
+			std::shared_ptr<_cell_data> d = it != this->map.end() ? it->second : nullptr;
 
-			if (!this->map.contains(key)) {
+			if (d == nullptr) {
 				d = std::make_shared<_cell_data>();
 				this->map.insert_or_assign(key, d);
 
 				d->X = x;
 				d->Y = y;
-				d->WsId = ws != nullptr ? ws->formID : 0;
+				d->WsId = ws->formID;
 			}
 
-			if (d == nullptr)
-				return;
-
 			{
+				// Reuse the load called on the dummy cell, since the cell is being loaded again after being flagged abort
+				if (d->State == _cell_data::_cell_states::Abort && d->DummyCell_Ptr != nullptr) {
+					d->State = _cell_data::_cell_states::Loading;
+					return;
+				}
+
 				if (d->State != _cell_data::_cell_states::None) {
 					return;
 				}
@@ -226,18 +232,45 @@ namespace GrassControl
 			if (cellData->DummyCell_Ptr) {
 				REL::Relocation<void (*)(RE::BGSGrassManager*, RE::TESObjectCELL*)> func{ RELOCATION_ID(15207, 15375) };
 				func(RE::BGSGrassManager::GetSingleton(), cellData->DummyCell_Ptr);
-
-				REL::Relocation<void (*)(RE::TESObjectCELL*, uintptr_t)> func2{ RELOCATION_ID(11932, 12071) };
-				func2(cellData->DummyCell_Ptr, 0);
-
-				delete cellData->DummyCell_Ptr->GetRuntimeData().cellData.exterior;
 			}
 
-			cellData->DummyCell_Ptr = nullptr;
+			_DiscardDummyCell(cellData);
 			cellData->State = _cell_data::_cell_states::None;
 
 			return true;
 		}
+	}
+
+	void DistantGrass::LoadOnlyCellInfoContainer2::_DiscardDummyCell(const std::shared_ptr<_cell_data>& cellData)
+	{
+		auto cell = cellData->DummyCell_Ptr;
+		cellData->DummyCell_Ptr = nullptr;
+
+		if (cell == nullptr)
+			return;
+
+		REL::Relocation<void (*)(RE::ExtraDataList*)> ClearGrassHandles{ RELOCATION_ID(11931, 12070) };
+		ClearGrassHandles(&cell->extraList);
+
+		REL::Relocation<void (*)(const RE::ExtraDataList&, void*)> SetAddGrassTask{ RELOCATION_ID(11932, 12071) };
+		SetAddGrassTask(cell->extraList, nullptr);
+
+		{
+			std::scoped_lock lock(cellMapMutex);
+			this->discardedCells.push_back(cell);
+		}
+	}
+
+	void DistantGrass::LoadOnlyCellInfoContainer2::FreeDiscardedCells()
+	{
+		std::scoped_lock lock(cellMapMutex);
+
+		for (auto cell : this->discardedCells) {
+			delete cell->GetRuntimeData().cellData.exterior;
+			delete[] reinterpret_cast<char*>(cell);
+		}
+
+		this->discardedCells.clear();
 	}
 
 	void DistantGrass::LoadOnlyCellInfoContainer2::Unload(const RE::TESWorldSpace* ws, const int x, const int y)
@@ -265,7 +298,7 @@ namespace GrassControl
 		}
 	}
 
-	void DistantGrass::LoadOnlyCellInfoContainer2::_DoLoad(const RE::TESWorldSpace* ws, const int x, const int y) const
+	void DistantGrass::LoadOnlyCellInfoContainer2::_DoLoad(const RE::TESWorldSpace* ws, const int x, const int y)
 	{
 		if (ws == nullptr)
 			return;
@@ -294,7 +327,8 @@ namespace GrassControl
 				func(RE::BGSGrassManager::GetSingleton(), d->DummyCell_Ptr);
 				d->State = _cell_data::_cell_states::Loaded;
 			} else if (d->DummyCell_Ptr != nullptr) {
-				d->DummyCell_Ptr = nullptr;
+				// Aborted while loading: the load has now arrived and nobody wants it, so let it go.
+				_DiscardDummyCell(d);
 				d->State = _cell_data::_cell_states::None;
 			} else {
 				d->State = _cell_data::_cell_states::None;  // this shouldn't happen?
@@ -304,11 +338,12 @@ namespace GrassControl
 
 	void DistantGrass::LoadOnlyCellInfoContainer2::UnloadAll()
 	{
-		for (auto& pair : this->map) {
-			_DoUnload(pair.second);
-		}
+		std::scoped_lock lock(cellMapMutex);
 
-		this->map.clear();
+		// Ensure only cells that are not currently being loaded are removed to avoid leaking the dummy cell
+		std::erase_if(this->map, [&](auto& pair) {
+			return !pair.second || pair.second->State == _cell_data::_cell_states::None || _DoUnload(pair.second);
+		});
 	}
 
 	void DistantGrass::RemoveGrassHook(RE::TESObjectCELL* cell, uintptr_t arg_1)
@@ -563,8 +598,9 @@ namespace GrassControl
 		// Reason: cell may get deleted while it still has grass and we can not keep grass there then.
 		if (!load_only) {
 			addr = RELOCATION_ID(13233, 13384).address() + (0xB2 - 0x60);
-			int ugrids = Memory::Internal::read<int>(addr_uGrids + 8);
-			int ggrids = getChosenGrassGridRadius() * 2 + 1;
+			int ugrids = RE::INISettingCollection::GetSingleton()->GetSetting("uGridsToLoad:General")->GetInteger();
+			// +1 ring because grass is kept one ring past grassRadius, and a cell deleted while it still holds grass leaves grass we cannot keep.
+			int ggrids = (getChosenGrassGridRadius() + 1) * 2 + 1;
 			int Max = std::max(ugrids, ggrids);
 			struct Patch10 : CodeGenerator
 			{
@@ -910,11 +946,13 @@ namespace GrassControl
 
 			switch (Config::DynDOLODGrassMode) {
 			case 1:
-				icells = Memory::Internal::read<int>(addr_uGrids + 8) / 2;
+				{
+					icells = RE::INISettingCollection::GetSingleton()->GetSetting("uGridsToLoad:General")->GetInteger() / 2;
+				}
 				break;
 
 			case 2:
-				icells = Memory::Internal::read<int>(addr_uLargeRef + 8) / 2;
+				icells = RE::INISettingCollection::GetSingleton()->GetSetting("uLargeRefLODGridSize:General")->GetInteger() / 2;
 				break;
 			default:
 				break;
@@ -1123,6 +1161,7 @@ namespace GrassControl
 			int d = c->self_data;
 			int tg = d >> 8 & 0xFF;
 
+			bool added = false;
 			bool quickLoad = (d >> 16 & 0xFF) != 0;
 			if (IsValidLoadedCell(cell, quickLoad)) {
 				if (*cell->GetName()) {
@@ -1136,13 +1175,14 @@ namespace GrassControl
 
 				func(GrassMgr, cell, customArg);
 
+				added = true;
 				logger::debug(fmt::runtime("AddedGrass({}, {})"), c->x, c->y);
 			} else {
 				logger::debug(fmt::runtime("AddedGrassFAIL({}, {}) <NotValidLoadedCell>"), c->x, c->y);
 			}
 
-			// Set this anyway otherwise we get stuck.
-			c->self_data = tg;
+			// Clear busy either way otherwise we get stuck, but only claim the target state if grass was successfully added. If not, we will try again.
+			c->self_data = added ? tg : (d & 0xFF);
 		}
 	}
 	GrassStates DistantGrass::GetWantState(const std::shared_ptr<cell_info>& c, const int curX, const int curY, const int uGrid, const int grassRadius, const bool canLoadFromFile, const std::string& wsName)
@@ -1191,6 +1231,7 @@ namespace GrassControl
 
 				c->self_data = 0;
 				c->cell = nullptr;
+				InterlockedExchange64(&c->furtherLoad, 0);
 				Map->map.erase(cell);
 				ClearCellAddGrassTask(cell);
 			} else {
@@ -1227,18 +1268,24 @@ namespace GrassControl
 			return;
 
 		int grassRadius = getChosenGrassGridRadius();
-		int uGrids = Memory::Internal::read<int>(addr_uGrids + 8);
+		int uGrids = RE::INISettingCollection::GetSingleton()->GetSetting("uGridsToLoad:General")->GetInteger();
 		int uHalf = uGrids / 2;
 		int bigSide = std::max(grassRadius, uHalf);
-		bool canLoadGrass = Memory::Internal::read<uint8_t>(addr_AllowLoadFile + 8) != 0;
+		bool canLoadGrass = RE::INISettingCollection::GetSingleton()->GetSetting("bAllowLoadGrass:Grass")->GetBool();
 
 		std::string wsName = ws->editorID.c_str();
+
+		int wanted = 0;
+		int alreadyLoaded = 0;
+		int loaded = 0;
 
 		for (int x = nowX - bigSide; x <= nowX + bigSide; x++) {
 			for (int y = nowY - bigSide; y <= nowY + bigSide; y++) {
 				unsigned char wantState = CalculateLoadState(nowX, nowY, x, y, uHalf, grassRadius);
 				if (wantState != 1)
 					continue;
+
+				wanted++;
 
 				auto c = Map->GetFromGrid(x, y);
 				if (!c)
@@ -1257,16 +1304,20 @@ namespace GrassControl
 				REL::Relocation<RE::TESObjectCELL* (*)(RE::TESWorldSpace*, uintptr_t)> func{ RELOCATION_ID(13549, 13641) };
 
 				auto cell = func(ws, mask);
-				if (IsValidLoadedCell(cell, false))
+				if (IsValidLoadedCell(cell, false)) {
+					alreadyLoaded++;
 					continue;
+				}
 
 				bool quickLoad = false;
 				if (canLoadGrass && c->checkHasFile(wsName)) {
 					quickLoad = true;
 				}
 
-				if (quickLoad && IsValidLoadedCell(cell, true))
+				if (quickLoad && IsValidLoadedCell(cell, true)) {
+					alreadyLoaded++;
 					continue;
+				}
 
 				InterlockedCompareExchange64(&c->furtherLoad, 0, 2);
 
@@ -1274,6 +1325,7 @@ namespace GrassControl
 
 				cell = func2(ws, x, y);
 				if (IsValidLoadedCell(cell, false)) {
+					loaded++;
 					logger::debug("InstantLoadSuccessFirst({}, {}) {}", x, y, cell->GetFormEditorID());
 				} else if (cell != nullptr) {
 					REL::Relocation<RE::TESObjectLAND* (*)(RE::TESObjectCELL*)> Func{ RELOCATION_ID(18513, 18970) };
@@ -1285,35 +1337,49 @@ namespace GrassControl
 						fnc(landPtr, 0, 1);
 
 						if (IsValidLoadedCell(cell, false)) {
+							loaded++;
 							logger::debug("InstantLoadSuccessSecond({}, {}) {}", c->x, c->y, cell->GetFormEditorID());
 						}
 					}
 				}
 			}
 		}
+
+		logger::debug("UpdateGrassGridEnsureLoad({}, {}) wanted: {}, alreadyLoaded: {}, loaded: {}", nowX, nowY, wanted, alreadyLoaded, loaded);
 	}
 
 	void DistantGrass::UpdateGrassGridQueue(const int prevX, const int prevY, const int movedX, const int movedY)
 	{
-		auto wsObj = RE::TES::GetSingleton()->GetRuntimeData2().worldSpace;
+		auto tes = RE::TES::GetSingleton();
+		auto wsObj = tes->GetRuntimeData2().worldSpace;
 
 		if (wsObj == nullptr)
 			return;
 
 		int grassRadius = getChosenGrassGridRadius();
-		int uGrids = Memory::Internal::read<int>(addr_uGrids + 8);
+		int uGrids = RE::INISettingCollection::GetSingleton()->GetSetting("uGridsToLoad:General")->GetInteger();
 		int uHalf = uGrids / 2;
 		int bigSide = std::max(grassRadius, uHalf);
-		bool canLoadGrass = Memory::Internal::read<uint8_t>(addr_AllowLoadFile + 8) != 0;
+		bool canLoadGrass = RE::INISettingCollection::GetSingleton()->GetSetting("bAllowLoadGrass:Grass")->GetBool();
 
 		std::string wsName = wsObj->editorID.c_str();
 
-		int nowX = prevX + movedX;
-		int nowY = prevY + movedY;
+		// The cell coordinates may not have changed at this point, so check whether we have the new coordinates already. It is safer to access the TES fields rather than those supplied by the hook.
+		int nowX = tes->currentGridX;
+		int nowY = tes->currentGridY;
+		int destX = nowX + movedX;
+		int destY = nowY + movedY;
 
-		for (int x = nowX - bigSide; x <= nowX + bigSide; x++) {
-			for (int y = nowY - bigSide; y <= nowY + bigSide; y++) {
+		int queued = 0;
+		int dropped = 0;
+		int blocked = 0;
+
+		for (int x = std::min(nowX, destX) - bigSide; x <= std::max(nowX, destX) + bigSide; x++) {
+			for (int y = std::min(nowY, destY) - bigSide; y <= std::max(nowY, destY) + bigSide; y++) {
 				unsigned char wantState = CalculateLoadState(nowX, nowY, x, y, uHalf, grassRadius);
+				if (wantState != 1)
+					wantState = CalculateLoadState(destX, destY, x, y, uHalf, grassRadius);
+
 				if (wantState != 1)
 					continue;
 
@@ -1344,13 +1410,24 @@ namespace GrassControl
 				if (quickLoad && IsValidLoadedCell(cell, true))
 					continue;
 
-				if (InterlockedCompareExchange64(&c->furtherLoad, 1, 0) == 0) {
-					REL::Relocation<void (*)(uintptr_t, RE::TESWorldSpace*, int, int, int)> Func{ RELOCATION_ID(18150, 18541) };
+				if (InterlockedCompareExchange64(&c->furtherLoad, 1, 0) != 0) {
+					blocked++;
+					continue;
+				}
 
-					Func(Memory::Internal::read<uintptr_t>(addr_QueueLoadCellUnkGlobal), wsObj, x, y, 0);
+				REL::Relocation<void (*)(uintptr_t, RE::TESWorldSpace*, int, int, int)> QueueCellLoad{ RELOCATION_ID(18150, 18541) };
+				QueueCellLoad(Memory::Internal::read<uintptr_t>(addr_QueueLoadCellUnkGlobal), wsObj, x, y, 0);
+
+				// Ensure the a cell does not get stuck in the queue if it is not loaded for some reason.
+				if (InterlockedCompareExchange64(&c->furtherLoad, 0, 1) == 1) {
+					dropped++;
+				} else {
+					queued++;
 				}
 			}
 		}
+
+		logger::debug("UpdateGrassGridQueue({}, {} -> {}, {}) queued: {}, dropped: {}, blocked: {}; raw prev: ({}, {}) moved: ({}, {})", nowX, nowY, destX, destY, queued, dropped, blocked, prevX, prevY, movedX, movedY);
 	}
 
 	void DistantGrass::UpdateGrassGridNow(const RE::TES* tes, int movedX, int movedY, int addType)
@@ -1373,12 +1450,13 @@ namespace GrassControl
 		logger::debug("UpdateGrassGridNowBegin({}, {}) type: {}", movedX, movedY, addType);
 
 		int grassRadius = getChosenGrassGridRadius();
-		int uGrids = Memory::Internal::read<int>(addr_uGrids + 8);
+		int uGrids = RE::INISettingCollection::GetSingleton()->GetSetting("uGridsToLoad:General")->GetInteger();	
 		int uHalf = uGrids / 2;
 		int bigSide = std::max(grassRadius, uHalf);
 		auto ws = tes->GetRuntimeData2().worldSpace;
 		auto grassMgr = RE::BGSGrassManager::GetSingleton();
-		bool canLoadGrass = Memory::Internal::read<uint8_t>(addr_AllowLoadFile + 8) != 0;
+		auto setting = RE::INISettingCollection::GetSingleton()->GetSetting("uGridsToLoad:General");
+		bool canLoadGrass = RE::INISettingCollection::GetSingleton()->GetSetting("bAllowLoadGrass:Grass")->GetBool();
 		std::string wsName;
 		if (ws != nullptr) {
 			wsName = ws->editorID.c_str();
@@ -1392,11 +1470,13 @@ namespace GrassControl
 			{
 				std::scoped_lock lock(cellMapMutex);
 				Map->unsafe_ForeachWithState([&](std::shared_ptr<cell_info> c) {
-					auto want = addType < 0 ? GrassStates::None : GetWantState(c, nowX, nowY, uGrids, grassRadius, false, "");
+					// Preload an extra cell around the edge so that the transition is not as abrupt.
+					auto want = addType < 0 ? GrassStates::None : GetWantState(c, nowX, nowY, uGrids, grassRadius + 1, false, "");
 					if (want == GrassStates::None) {
 						auto cell = c->cell;
 						c->cell = nullptr;
 						c->self_data = 0;
+						InterlockedExchange64(&c->furtherLoad, 0);
 						ClearCellAddGrassTask(cell);
 
 						logger::debug("RemoveGrassGrid({}, {})", c->x, c->y);
@@ -1449,9 +1529,11 @@ namespace GrassControl
 						int d = c->self_data;
 						bool busy = d >> 24 != 0;
 
+						auto have = static_cast<GrassStates>(d & 0xFF);
 						auto want = GetWantState(c, nowX, nowY, uGrids, grassRadius, canLoadGrass, wsName);
-						if (want > static_cast<GrassStates>(d & 0xFF))  // this check is using > because there's no need to set lod grass if we already have active grass
-						{
+
+						// Only load grass if we don't have it and want it. If we already have it, then we don't need to do anything.
+						if (want != GrassStates::None && have == GrassStates::None) {
 							bool canQuickLoad = want == GrassStates::Active;
 							auto cellPtr = GetCurrentWorldspaceCell(tes, ws, x, y, canQuickLoad, addType > 0);
 
@@ -1493,6 +1575,8 @@ namespace GrassControl
 	void DistantGrass::UpdateGrassGridNow_LoadOnly(const RE::TES* tes, int movedX, int movedY, int addType)
 	{
 		logger::debug("UpdateGrassGridNowBegin_LoadOnly({}, {}) type: {}", movedX, movedY, addType);
+
+		LO2Map->FreeDiscardedCells();
 
 		int grassRadius = getChosenGrassGridRadius();
 		auto ws = tes->GetRuntimeData2().worldSpace;
