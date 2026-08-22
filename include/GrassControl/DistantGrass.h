@@ -115,6 +115,8 @@ namespace GrassControl
 
 		static void UpdateGrassGridNow_LoadOnly(const RE::TES* tes, int movedX, int movedY, int addType);
 
+		static int GetUGrids();
+
 		class LoadOnlyCellInfoContainer2 final
 		{
 			class _cell_data final

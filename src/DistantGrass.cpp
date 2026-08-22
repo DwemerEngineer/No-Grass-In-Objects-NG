@@ -67,7 +67,7 @@ namespace GrassControl
 						return true;
 					}
 				}
-				return false; 
+				return false;
 			});
 		} catch (...) {
 			logger::error("Exception occurred while trying to erase cell from loaded reference map. Attempting to continue.");
@@ -598,7 +598,7 @@ namespace GrassControl
 		// Reason: cell may get deleted while it still has grass and we can not keep grass there then.
 		if (!load_only) {
 			addr = RELOCATION_ID(13233, 13384).address() + (0xB2 - 0x60);
-			int ugrids = RE::INISettingCollection::GetSingleton()->GetSetting("uGridsToLoad:General")->GetInteger();
+			int ugrids = GetUGrids();
 			// +1 ring because grass is kept one ring past grassRadius, and a cell deleted while it still holds grass leaves grass we cannot keep.
 			int ggrids = (getChosenGrassGridRadius() + 1) * 2 + 1;
 			int Max = std::max(ugrids, ggrids);
@@ -943,16 +943,19 @@ namespace GrassControl
 			float cells = total / 4096.0f;
 
 			int icells = static_cast<int>(std::ceil(cells));
+			RE::Setting* largeGrid = nullptr;
 
 			switch (Config::DynDOLODGrassMode) {
 			case 1:
-				{
-					icells = RE::INISettingCollection::GetSingleton()->GetSetting("uGridsToLoad:General")->GetInteger() / 2;
-				}
+				icells = GetUGrids() / 2;
 				break;
-
 			case 2:
-				icells = RE::INISettingCollection::GetSingleton()->GetSetting("uLargeRefLODGridSize:General")->GetInteger() / 2;
+				largeGrid = RE::GetINISetting("uLargeRefLODGridSize:General");
+				if (largeGrid)
+					icells = largeGrid->GetInteger() / 2;
+				else
+					icells = 9 / 2;
+
 				break;
 			default:
 				break;
@@ -1268,8 +1271,8 @@ namespace GrassControl
 			return;
 
 		int grassRadius = getChosenGrassGridRadius();
-		int uGrids = RE::INISettingCollection::GetSingleton()->GetSetting("uGridsToLoad:General")->GetInteger();
-		int uHalf = uGrids / 2;
+
+		int uHalf = GetUGrids() / 2;
 		int bigSide = std::max(grassRadius, uHalf);
 		bool canLoadGrass = RE::INISettingCollection::GetSingleton()->GetSetting("bAllowLoadGrass:Grass")->GetBool();
 
@@ -1357,8 +1360,7 @@ namespace GrassControl
 			return;
 
 		int grassRadius = getChosenGrassGridRadius();
-		int uGrids = RE::INISettingCollection::GetSingleton()->GetSetting("uGridsToLoad:General")->GetInteger();
-		int uHalf = uGrids / 2;
+		int uHalf = GetUGrids() / 2;
 		int bigSide = std::max(grassRadius, uHalf);
 		bool canLoadGrass = RE::INISettingCollection::GetSingleton()->GetSetting("bAllowLoadGrass:Grass")->GetBool();
 
@@ -1450,12 +1452,10 @@ namespace GrassControl
 		logger::debug("UpdateGrassGridNowBegin({}, {}) type: {}", movedX, movedY, addType);
 
 		int grassRadius = getChosenGrassGridRadius();
-		int uGrids = RE::INISettingCollection::GetSingleton()->GetSetting("uGridsToLoad:General")->GetInteger();	
-		int uHalf = uGrids / 2;
+		int uHalf = GetUGrids() / 2;
 		int bigSide = std::max(grassRadius, uHalf);
 		auto ws = tes->GetRuntimeData2().worldSpace;
 		auto grassMgr = RE::BGSGrassManager::GetSingleton();
-		auto setting = RE::INISettingCollection::GetSingleton()->GetSetting("uGridsToLoad:General");
 		bool canLoadGrass = RE::INISettingCollection::GetSingleton()->GetSetting("bAllowLoadGrass:Grass")->GetBool();
 		std::string wsName;
 		if (ws != nullptr) {
@@ -1471,7 +1471,7 @@ namespace GrassControl
 				std::scoped_lock lock(cellMapMutex);
 				Map->unsafe_ForeachWithState([&](std::shared_ptr<cell_info> c) {
 					// Preload an extra cell around the edge so that the transition is not as abrupt.
-					auto want = addType < 0 ? GrassStates::None : GetWantState(c, nowX, nowY, uGrids, grassRadius + 1, false, "");
+					auto want = addType < 0 ? GrassStates::None : GetWantState(c, nowX, nowY, GetUGrids(), grassRadius + 1, false, "");
 					if (want == GrassStates::None) {
 						auto cell = c->cell;
 						c->cell = nullptr;
@@ -1530,7 +1530,7 @@ namespace GrassControl
 						bool busy = d >> 24 != 0;
 
 						auto have = static_cast<GrassStates>(d & 0xFF);
-						auto want = GetWantState(c, nowX, nowY, uGrids, grassRadius, canLoadGrass, wsName);
+						auto want = GetWantState(c, nowX, nowY, GetUGrids(), grassRadius, canLoadGrass, wsName);
 
 						// Only load grass if we don't have it and want it. If we already have it, then we don't need to do anything.
 						if (want != GrassStates::None && have == GrassStates::None) {
@@ -1604,5 +1604,13 @@ namespace GrassControl
 		}
 
 		logger::debug("UpdateGrassGridNowEnd_LoadOnly({}, {}) type: {}; c_count: {}; shapeCount: {}", movedX, movedY, addType, LO2Map->GetCount(), Memory::Internal::read<int>((uintptr_t)grassMgr + 0x58));
+	}
+
+	int DistantGrass::GetUGrids()
+	{
+		auto uGridsSetting = RE::GetINISetting("uGridsToLoad:General");
+		if (uGridsSetting)
+			return uGridsSetting->GetInteger();
+		return 5;
 	}
 }
