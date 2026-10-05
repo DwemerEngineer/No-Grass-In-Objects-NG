@@ -397,7 +397,7 @@ namespace GrassControl
 			Map = std::make_unique<CellInfoContainer>();
 			logger::debug("Map created at {:x}", reinterpret_cast<uintptr_t>(Map.get()));
 		}
-
+		
 		// Disable grass fade.
 		if (!load_only) {
 			auto addr = RELOCATION_ID(38141, 39098).address();
@@ -411,7 +411,7 @@ namespace GrassControl
 			} catch (...) {
 			}
 		}
-
+		
 		// Auto use correct iGrassCellRadius.
 		if (!load_only) {
 			int radius = getChosenGrassGridRadius();
@@ -421,6 +421,13 @@ namespace GrassControl
 
 		// Unload old grass, load new grass. But we have replaced how the grid works now.
 		auto addr = RELOCATION_ID(13148, 13288).address() + REL::Relocate(0xA06 - 0x220, 0xA1D);
+		auto retnOffset = REL::Relocate(0x159, 0x17D);
+		if(REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99)
+		{
+			addr = RELOCATION_ID(13148, 13288).address() + 0x8B3;
+			retnOffset = 0x177;
+		}
+
 		struct Patch : CodeGenerator
 		{
 			Patch(std::uintptr_t a_func, uintptr_t a_target, Reg a_Y, Reg a_X)
@@ -451,12 +458,12 @@ namespace GrassControl
 				dq(a_target);
 			}
 		};
-		Patch patch(reinterpret_cast<uintptr_t>(UpdateGrassGridNow), addr + REL::Relocate(0x159, 0x17D), Reg32(REL::Relocate(Reg::R14D, Reg::EDI)), Reg32(REL::Relocate(Reg::EBP, Reg::R14D)));
+		Patch patch(reinterpret_cast<uintptr_t>(UpdateGrassGridNow), addr + retnOffset, Reg32(REL::Relocate(Reg::R14D, Reg::EDI)), Reg32(REL::Relocate(Reg::EBP, Reg::R14D)));
 		patch.ready();
 
 		auto& trampoline = SKSE::GetTrampoline();
 		trampoline.write_branch<6>(addr, trampoline.allocate(patch));
-
+		
 		// cell dtor
 		if (!load_only) {
 			addr = RELOCATION_ID(18446, 18877).address() + (0xC4 - 0x50);
@@ -551,7 +558,7 @@ namespace GrassControl
 
 			trampoline.write_branch<5>(addr, trampoline.allocate(patch5));
 		}
-
+		
 		addr = RELOCATION_ID(15214, 15383).address() + REL::Relocate(0x78B7 - 0x7830, 0x7E);
 		struct Patch9 : CodeGenerator
 		{
@@ -775,6 +782,9 @@ namespace GrassControl
 			trampoline.write_branch<5>(addr, trampoline.allocate(patch13));
 
 			addr = RELOCATION_ID(18150, 18541).address() + REL::Relocate(0xB094 - 0xAF20, 0x1CA, 0x177);
+			if (REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99) {
+				addr = RELOCATION_ID(18150, 18541).address() + 0x1E4;
+			}
 			struct Patch14 : CodeGenerator
 			{
 				Patch14(uintptr_t a_func, uintptr_t a_target, uintptr_t rbx_offset)
@@ -839,6 +849,9 @@ namespace GrassControl
 			trampoline.write_branch<5>(addr, trampoline.allocate(patch15));
 
 			addr = RELOCATION_ID(13148, 13288).address() + REL::Relocate(0x2630 - 0x2220, 0x4D0);
+			if (REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99) {
+				addr = RELOCATION_ID(13148, 13288).address() + 0x4C0;
+			}
 			struct Patch16 : CodeGenerator
 			{
 				Patch16(std::uintptr_t a_func, uintptr_t a_target, Reg a_movedY, uintptr_t a_retn_offset)

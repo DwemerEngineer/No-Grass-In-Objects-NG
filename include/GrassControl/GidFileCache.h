@@ -198,7 +198,11 @@ namespace GrassControl
 						stl::write_thunk_call<PathFileNameLoad>(RELOCATION_ID(15206, 15374).address() + REL::Relocate(0xE5, 0xE5));
 					}
 
-					stl::write_thunk_call<PathFileNameSave>(RELOCATION_ID(15204, 15372).address() + REL::Relocate(0x6A7, 0x6A3));
+					if (REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99) {
+						stl::write_thunk_call<PathFileNameSave>(RELOCATION_ID(15204, 15372).address() + 0x6B3);
+					} else {
+						stl::write_thunk_call<PathFileNameSave>(RELOCATION_ID(15204, 15372).address() + REL::Relocate(0x6A7, 0x6A3));
+					}
 			
 					if (exists(std::filesystem::path(Util::GetProgressFilePath()))) {
 						stl::write_thunk_call<GrassCountIncrement>(RELOCATION_ID(13190, 13335).address() + REL::Relocate(0xD40 - 0xC70, 0xD0));

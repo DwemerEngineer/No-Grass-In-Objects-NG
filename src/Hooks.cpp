@@ -211,6 +211,18 @@ namespace GrassControl
 
 		if (Config::RayCast || Config::GrassCliffs) {
 			auto addr = RELOCATION_ID(15212, 15381).address() + REL::Relocate((0x723A - 0x6CE0), 0x664, 0x56C);
+			auto rspPosOffset = REL::Relocate(0x40, 0x50, 0x50);
+			auto rspNormalOffset = REL::Relocate(0x30, 0x40, 0x40);
+			auto rbpOffset = REL::Relocate(0x48, 0x68, 0x38);
+			auto jumpOffset = REL::Relocate(0x5 + (0x661 - 0x23F), -0x156, 0x5 + 0x510);
+			if (REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99) {
+				addr = RELOCATION_ID(15212, 15381).address() + 0x698;
+				rspPosOffset = 0x68;
+				rspNormalOffset = 0x58;
+				rbpOffset = 0x60;
+				jumpOffset = -0x153;
+			}
+
 			struct Patch : CodeGenerator
 			{
 				Patch(std::uintptr_t a_canPlaceGrassFunc, std::uintptr_t a_grassCliffHelperFunc, std::uintptr_t a_target,
@@ -315,13 +327,13 @@ namespace GrassControl
 				}
 			};
 			Patch patch(reinterpret_cast<uintptr_t>(CanPlaceGrassWrapper), reinterpret_cast<uintptr_t>(GrassCliffHelper), addr,
-				REL::Relocate(0x40, 0x50, 0x50),
-				REL::Relocate(0x30, 0x40, 0x40),
+				rspPosOffset,
+				rspNormalOffset,
 				Reg64(REL::Relocate(Reg::RSI, Reg::RDI, Reg::RBX)),
 				Xmm(REL::Relocate(7, 7, 14)),
-				REL::Relocate(0x48, 0x68, 0x38),
+				rbpOffset,
 				Reg64(REL::Relocate(Reg64::RBP, Reg64::RBX, Reg64::R13)),
-				REL::Relocate(0x5 + (0x661 - 0x23F), -0x156, 0x5 + 0x510));
+				jumpOffset);
 			patch.ready();
 
 			auto& trampoline = SKSE::GetTrampoline();

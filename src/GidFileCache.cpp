@@ -78,7 +78,12 @@ namespace GrassControl
 		}
 
 		// Disable grass console.
-		addr = RELOCATION_ID(15204, 15372).address() + 0x896;
+		if (REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99) {
+			addr = RELOCATION_ID(15204, 15372).address() + 0x8A6;
+		} else {
+			addr = RELOCATION_ID(15204, 15372).address() + 0x896;
+		}
+
 		struct Patch2 : CodeGenerator
 		{
 			Patch2(const std::uintptr_t a_target)
@@ -89,7 +94,7 @@ namespace GrassControl
 				jmp(ptr[rip + retnLabel]);
 
 				L(retnLabel);
-				dq(a_target + 0x7 + (0x5882 - 0x55AD));
+				dq(a_target + 0x7 + 0x2D5);
 			}
 		};
 		Patch2 patch2(addr);

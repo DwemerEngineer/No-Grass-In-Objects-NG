@@ -268,15 +268,23 @@ namespace GrassControl
 					// Vanilla game groups shape selection by 12 x 12 cells, we want a shape per cell.
 					stl::write_thunk_call<CellSelection>(RELOCATION_ID(15206, 15374).address() + REL::Relocate(0x645C - 0x6200, 0x645C - 0x6200));
 					stl::write_thunk_call<LoadGrassType>(RELOCATION_ID(15205, 15373).address() + REL::Relocate(0x617, 0x583));
-					stl::write_thunk_call<CellSelection>(RELOCATION_ID(15204, 15372).address() + REL::Relocate(0x2F5, 0x2F5));
+					if (REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99) {
+						stl::write_thunk_call<CellSelection>(RELOCATION_ID(15204, 15372).address() + 0x305);
+					} else {
+						stl::write_thunk_call<CellSelection>(RELOCATION_ID(15204, 15372).address() + REL::Relocate(0x2F5, 0x2F5));
+					}
 
 					stl::write_thunk_jump<UpdateGrassGridAddRemove>(RELOCATION_ID(13190, 13335).address());
 					Memory::Internal::write<uint8_t>(RELOCATION_ID(13190, 13335).address() + 5, 0xC3, true);
 					stl::write_thunk_jump<UpdateGrassGridAddRemove2>(RELOCATION_ID(13191, 13336).address());
 					Memory::Internal::write<uint8_t>(RELOCATION_ID(13191, 13336).address() + 5, 0xC3, true);
-
+					
 					if (!load_only) {
-						stl::write_thunk_call<CallUpdateGrassGridEnsureLoad>(RELOCATION_ID(13148, 13288).address() + REL::Relocate(0x29AF - 0x2220, 0x9A9));
+						if (REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99) {
+							stl::write_thunk_call<CallUpdateGrassGridEnsureLoad>(RELOCATION_ID(13148, 13288).address() + 0x85A);
+						} else {
+							stl::write_thunk_call<CallUpdateGrassGridEnsureLoad>(RELOCATION_ID(13148, 13288).address() + REL::Relocate(0x29AF - 0x2220, 0x9A9));
+						}
 					}
 				}
 			}
