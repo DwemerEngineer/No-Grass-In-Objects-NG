@@ -1,26 +1,22 @@
 #include "GrassControl/Profiler.h"
+#include "GrassControl/Util.h"
+
+#include <algorithm>
+#include <numeric>
 
 namespace GrassControl
 {
-	Profiler::Profiler() :
-		Timer(new stopwatch::Stopwatch()), Divide(1)
-	{
-		this->Timer->start();
-	}
-
 	void Profiler::Begin()
 	{
 		int who = GetCurrentThreadId();
-		long long when = this->Timer->elapsed<stopwatch::ms>();
+		long long when = this->Timer.elapsed<stopwatch::ms>();
 
 		{
 			std::scoped_lock lock(this->Locker);
 			for (int i = 0; i < this->Progress.size(); i++) {
 				auto& [fst, snd] = this->Progress[i];
 				if (fst == who) {
-					{
-						this->Progress[i] = std::pair{ who, when };
-					}
+					this->Progress[i] = std::pair{ who, when };
 					return;
 				}
 			}
@@ -31,7 +27,7 @@ namespace GrassControl
 
 	void Profiler::End()
 	{
-		long long when = this->Timer->elapsed<stopwatch::ms>();
+		long long when = this->Timer.elapsed<stopwatch::ms>();
 		int who = GetCurrentThreadId();
 
 		{
@@ -59,9 +55,7 @@ namespace GrassControl
 		{
 			std::lock_guard lock(this->Locker);
 			for (auto diff : this->Times) {
-				auto w = static_cast<double>(diff);
-				w /= this->Divide;
-				all.push_back(w);
+				all.push_back(static_cast<double>(diff));
 			}
 		}
 
@@ -75,7 +69,8 @@ namespace GrassControl
 
 			double sum = std::accumulate(all.begin(), all.end(), 0.0);
 			double avg = sum / all.size();
-			double med = all[all.size() / 2];
+			const auto middle = all.size() / 2;
+			double med = all.size() % 2 == 0 ? (all[middle - 1] + all[middle]) / 2.0 : all[middle];
 			double min = all[0];
 			double max = all[all.size() - 1];
 
@@ -90,6 +85,5 @@ namespace GrassControl
 			message = Util::StringHelpers::Join(things, "; ");
 		}
 		RE::SendHUDMessage::ShowHUDMessage(message.c_str(), nullptr, true);
-		//logger::debug(fmt::runtime(message));
 	}
 }

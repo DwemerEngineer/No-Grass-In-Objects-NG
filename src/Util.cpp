@@ -1,5 +1,6 @@
 #include "GrassControl/Util.h"
-#include "closest_point.h"
+
+#include <set>
 
 namespace
 {
@@ -90,7 +91,7 @@ namespace
 	};
 }
 
-namespace Util::Files
+namespace GrassControl::Util::Files
 {
 	std::filesystem::path GamePath(const std::filesystem::path& relative)
 	{
@@ -229,436 +230,193 @@ namespace Util::Files
 	}
 }
 
-namespace Util
+namespace GrassControl::Util
 {
 	void ReportAndFailTimed(const std::string& a_message)
 	{
-		logger::error(fmt::runtime(a_message));
+		logger::error("{}", a_message);
 		MessageBoxTimeoutA(nullptr, a_message.c_str(), a_message.c_str(), MB_SYSTEMMODAL, 0, 7000);
 		TerminateProcess(GetCurrentProcess(), 1);
 	}
 
-	std::string GetProgressFilePath()
+	std::filesystem::path GetProgressFilePath()
 	{
-		std::string n = _ovFilePath;
-		if (!n.empty()) {
-			return n;
-		}
-
-		// Dumb user mode for .txt.txt file name.
-		try {
-			auto fi = std::filesystem::path(_progressFilePath);
-			if (exists(fi)) {
-				_ovFilePath = _progressFilePath;
-			} else {
-				std::string fpath = _progressFilePath + R"(.txt)";
-				fi = std::filesystem::path(fpath);
-				if (exists(fi)) {
-					_ovFilePath = fpath;
-				}
+		static const auto path = [] {
+			const auto normal = Files::GamePath(L"PrecacheGrass.txt");
+			const auto doubled = Files::GamePath(L"PrecacheGrass.txt.txt");
+			std::error_code error;
+			if (std::filesystem::exists(normal, error)) {
+				return normal;
 			}
-		} catch (std::filesystem::filesystem_error e) {
-			logger::error(fmt::runtime("Failed to find progress file path! Exception occured: {}"), e.what());
-			_ovFilePath = _progressFilePath;
-			return _ovFilePath;
-		}
 
-		if (_ovFilePath.empty()) {
-			_ovFilePath = _progressFilePath;
-		}
+			if (!error && std::filesystem::exists(doubled, error)) {
+				return doubled;
+			}
 
-		return _ovFilePath;
+			if (error) {
+				logger::error("Failed to locate the progress file: {}", error.message());
+			}
+
+			return normal;
+		}();
+		return path;
 	}
+}
 
-	void NopBlock(uintptr_t addr, int size, int offset)
+namespace GrassControl::Util
+{
+	std::unique_ptr<CachedFormList> CachedFormList::TryParse(const std::string& input, const std::string& settingNameForLog)
 	{
-		DWORD flOldProtect = 0;
-		BOOL change_protection = VirtualProtect(reinterpret_cast<LPVOID>(addr), 0x13, PAGE_EXECUTE_READWRITE, &flOldProtect);
-		if (change_protection) {
-			memset(reinterpret_cast<void*>(addr + offset), 0x90, size);
-		}
-	}
-
-	RE::NiAVObject* GetAVObject(const RE::hkpCdBody* body)
-	{
-		typedef RE::NiAVObject* (*_GetUserData)(const RE::hkpCdBody*);
-		static auto getAVObject = REL::Relocation<_GetUserData>(RELOCATION_ID(76160, 77988));
-		return body ? getAVObject(body) : nullptr;
-	}
-
-	RE::TESForm* GetRefrBaseForm(RE::TESObjectREFR* ref)
-	{
-		RE::TESForm* result = nullptr;
-
-		if (ref != nullptr) {
-			auto bound = ref->GetBaseObject();
-			if (bound != nullptr) {
-				auto baseform = bound->As<RE::TESForm>();
-				if (baseform != nullptr) {
-					result = baseform;
-					return result;
-				}
-			}
-		}
-
-		return result;
-	}
-
-	RE::TESForm* GetBodyBaseForm(const RE::hkpCdBody* body)
-	{
-		RE::TESForm* result = nullptr;
-
-		RE::TESObjectREFR* ref = nullptr;
-
-		auto av = GetAVObject(body);
-		if (av) {
-			ref = av->GetUserData();
-		}
-		if (ref != nullptr) {
-			auto bound = ref->GetBaseObject();
-			if (bound != nullptr) {
-				auto baseform = bound->As<RE::TESForm>();
-				if (baseform != nullptr) {
-					result = baseform;
-					return result;
-				}
-			}
-		}
-
-		return result;
-	}
-
-	void GetAllObjects(RE::NiAVObject* object, std::set<RE::NiAVObject*>* result)
-	{
-		if (object && result)
-			result->insert(object);
-		auto node = object ? object->AsNode() : nullptr;
-		if (node)
-			for (auto child : node->GetChildren())
-				GetAllObjects(child.get(), result);
-	}
-
-	struct ObjCache
-	{
-		struct ShapeVertices
-		{
-			RE::NiAVObject* object;
-			std::vector<RE::NiPoint3> vertices;
-		};
-
-		struct CacheEntry
-		{
-			RE::NiAVObject* baseObj = nullptr;
-			RE::BSFixedString name;
-			std::vector<ShapeVertices> nodes;
-		};
-
-		std::array<CacheEntry, 10> entries;
-		int nextEvict = 0;
-
-		CacheEntry* GetOrBuild(RE::NiAVObject* obj)
-		{
-			for (auto& entry : entries) {
-				if (entry.baseObj == obj)
-					return &entry;
-			}
-
-			CacheEntry& entry = entries[nextEvict];
-			nextEvict = (nextEvict + 1) % 10;
-			entry.baseObj = obj;
-			entry.nodes.clear();
-
-			const RE::BSFixedString& objName = obj->name;
-
-			for (auto& entry : entries) {
-				if (entry.name == objName) {
-					if (entry.baseObj != obj) {
-						entry.baseObj = obj;
-
-						size_t i = 0;
-						std::set<RE::NiAVObject*> objects;
-						Util::GetAllObjects(obj, &objects);
-						for (auto object : objects) {
-							if (object->AsTriShape() && i < entry.nodes.size()) {
-								const RE::NiTransform& world = object->world;
-								entry.nodes[i].object = object;
-								i++;
-							}
-						}
-					}
-					return &entry;
-				}
-			}
-
-			std::set<RE::NiAVObject*> objects;
-			Util::GetAllObjects(obj, &objects);
-
-			for (auto object : objects) {
-				if (auto niTriShape = object->AsNiTriShape()) {
-					if (auto modelData = niTriShape->GetRuntimeData().spModelData) {
-						ShapeVertices sv;
-						sv.object = object;
-
-						sv.vertices.reserve(modelData->vertices);
-						for (int i = 0; i < modelData->vertices; i++) {
-							auto vertex = modelData->vertex[i];
-							sv.vertices.push_back(vertex);
-						}
-						entry.nodes.push_back(std::move(sv));
-					}
-				} else if (auto bsTriShape = object->AsTriShape()) {
-					if (auto rendererData = bsTriShape->GetGeometryRuntimeData().rendererData) {
-						ShapeVertices sv;
-						sv.object = object;
-
-						const RE::NiTransform& world = object->world;
-
-						uint32_t vertexSize = rendererData->vertexDesc.GetSize();
-						uint32_t offset = rendererData->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-						uint8_t* base = rendererData->rawVertexData + offset;
-						auto vertexCount = bsTriShape->GetTrishapeRuntimeData().vertexCount;
-
-						sv.vertices.reserve(vertexCount);
-						for (int i = 0; i < vertexCount; i++) {
-							sv.vertices.push_back(*reinterpret_cast<RE::NiPoint3*>(base + vertexSize * i));
-						}
-						entry.nodes.push_back(std::move(sv));
-					}
-				}
-			}
-
-			return &entry;
-		}
-	};
-
-	static thread_local ObjCache objCache;
-
-	RE::NiAVObject* FindClosestObj(RE::NiAVObject* baseObj, RE::NiPoint3& pos)
-	{
-		/*
-				auto triangleCount = bsTriShape->GetTrishapeRuntimeData().triangleCount;
-			uint32_t vertexSize = rendererData->vertexDesc.GetSize();
-			uint32_t offset = rendererData->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-
-			for (std::uint32_t i = 0; i < (triangleCount * 3u); i += 3) {
-				glm::vec3 triangle[3];
-
-				triangle[0] = *reinterpret_cast<glm::vec3*>(&rendererData->rawVertexData[vertexSize * rendererData->rawIndexData[i] + offset]);
-				triangle[1] = *reinterpret_cast<glm::vec3*>(&rendererData->rawVertexData[vertexSize * rendererData->rawIndexData[i + 1] + offset]);
-				triangle[2] = *reinterpret_cast<glm::vec3*>(&rendererData->rawVertexData[vertexSize * rendererData->rawIndexData[i + 2] + offset]);
-
-				auto closestPt = closest_pt_triangle(triangle, glmPos);
-				auto dist = glm::distance2(closestPt, glmPos);
-
-					if (dist < bestDist) {
-						bestObj = object;
-						bestDist = dist;
-					}
-			}
-		*/
-
-		auto* entry = objCache.GetOrBuild(baseObj);
-
-		float bestDist = std::numeric_limits<float>::max();
-		RE::NiAVObject* bestObj = nullptr;
-
-		for (auto& node : entry->nodes) {
-			const RE::NiTransform& world = node.object->world;
-			RE::NiMatrix3 invRotate = world.rotate.Transpose();
-			float invScale = 1.0f / world.scale;
-			RE::NiPoint3 localPos = (invRotate * (pos - world.translate)) * invScale;
-			RE::NiPoint3 bestVert;
-			for (auto& vertex : node.vertices) {
-				float dist = vertex.GetSquaredDistance(localPos);
-				if (dist < bestDist) {
-					bestDist = dist;
-					bestObj = node.object;
-				}
-			}
-		}
-
-		return bestObj;
-	}
-
-	CachedFormList::CachedFormList() = default;
-
-	std::unique_ptr<CachedFormList> CachedFormList::TryParse(const std::string& input, std::string settingNameForLog, bool warnOnMissingForm, bool dontWriteAnythingToLog)
-	{
-		if (settingNameForLog.empty()) {
-			settingNameForLog = "unknown form list setting";
-		}
-
-		auto ls = std::make_unique<CachedFormList>();
-		char Char = ';';
-		auto spl = StringHelpers::split(input, Char, true);
-		for (auto& x : spl) {
-			std::string idstr;
-			std::string fileName;
-
-			auto ix = x.find(L':');
-			if (ix <= 0) {
-				if (!dontWriteAnythingToLog) {
-					logger::warn(fmt::runtime("Failed to parse form for " + settingNameForLog + "! Invalid input: `" + x + "`."));
-				}
-
+		auto list = std::make_unique<CachedFormList>();
+		auto* dataHandler = RE::TESDataHandler::GetSingleton();
+		for (const auto& entry : StringHelpers::split(input, ';', true)) {
+			const auto spec = ParseFormSpec(entry);
+			if (!spec) {
+				logger::warn("Failed to parse form for {}: {}", settingNameForLog, entry);
 				continue;
 			}
 
-			idstr = x.substr(0, ix);
-			fileName = x.substr(ix + 1);
-
-			if (!std::ranges::all_of(idstr.begin(), idstr.end(), [](wchar_t q) { return (q >= L'0' && q <= L'9') || (q >= L'a' && q <= L'f') || (q >= L'A' && q <= L'F'); })) {
-				if (!dontWriteAnythingToLog) {
-					logger::warn(fmt::runtime("Failed to parse form for " + settingNameForLog + "! Invalid form ID: `" + idstr + "`."));
-				}
-
-				continue;
-			}
-
-			if (fileName.empty()) {
-				if (!dontWriteAnythingToLog) {
-					logger::warn(fmt::runtime("Failed to parse form for " + settingNameForLog + "! Missing file name."));
-				}
-
-				continue;
-			}
-
-			RE::FormID id = 0;
-			bool sucess;
-			try {
-				auto substr = idstr.substr(0, 2);
-				for (auto& c : substr)
-					c = static_cast<char>(std::tolower(c));
-
-				if (substr == "fe" || substr == "0x")
-					idstr.erase(0, 2);
-
-				id = stoul(idstr, nullptr, 16);
-				sucess = true;
-			} catch (std::exception&) {
-				sucess = false;
-			}
-			if (!sucess) {
-				if (!dontWriteAnythingToLog) {
-					logger::warn(fmt::runtime("Failed to parse form for " + settingNameForLog + "! Invalid form ID: `" + idstr + "`."));
-				}
-
-				continue;
-			}
-
-			auto file = RE::TESDataHandler::GetSingleton()->LookupLoadedModByName(fileName);
+			const auto* file = dataHandler->LookupLoadedModByName(spec->filename);
+			bool light = false;
 			if (!file) {
-				file = RE::TESDataHandler::GetSingleton()->LookupLoadedLightModByName(fileName);
-				if (file)
-					id &= 0x00000FFF;
-			} else {
-				id &= 0x00FFFFFF;
+				file = dataHandler->LookupLoadedLightModByName(spec->filename);
+				light = true;
 			}
 
-			if (file) {
-				if (!RE::TESDataHandler::GetSingleton()->LookupForm(id, fileName)) {
-					if (!dontWriteAnythingToLog && warnOnMissingForm) {
-						logger::warn(fmt::runtime("Failed to find form for " + settingNameForLog + "! Form ID was 0x{:08x} and file was " + fileName + "."), id);
-					}
-					continue;
-				}
-			} else {
-				if (!dontWriteAnythingToLog) {
-					logger::warn(fmt::runtime("Failed to find file for " + settingNameForLog + "! File name was `" + fileName + "` and form ID was 0x{:08x}."), id);
-				}
+			if (!file) {
+				logger::warn("Failed to find plugin {} for {}", spec->filename, settingNameForLog);
 				continue;
 			}
 
-			auto form = RE::TESDataHandler::GetSingleton()->LookupForm(id, fileName);
-			auto formID = RE::TESDataHandler::GetSingleton()->LookupFormID(id, fileName);
-			if (!form || !formID) {
-				if (!dontWriteAnythingToLog) {
-					logger::warn(fmt::runtime("Invalid form detected while adding form to " + settingNameForLog + "! Possible invalid form ID: `0x{:08x}`."), formID);
-				}
+			const auto localID = spec->id & (light ? 0xFFFu : 0xFFFFFFu);
+			auto* form = dataHandler->LookupForm(localID, spec->filename);
+			if (!form) {
+				logger::warn("Failed to find form 0x{:08x} in {} for {}", localID, spec->filename, settingNameForLog);
 				continue;
 			}
 
-			auto baseFile = form->GetFile(0);
-			if (file != baseFile) {
-				formID = RE::TESDataHandler::GetSingleton()->LookupFormID(id, baseFile->GetFilename());
-			}
-
-			bool skip = false;
-
-			for (auto oldForm : ls->Forms) {
-				if (oldForm == nullptr)
-					continue;
-
-				auto existingFormID = oldForm->formID & 0x00FFFFFF;
-				if (existingFormID == id) {
-					if ((formID & 0xFF000000) > (oldForm->formID & 0xFF000000)) {
-						if (!dontWriteAnythingToLog) {
-							logger::info(fmt::runtime("Replacing form 0x{:08x} in " + settingNameForLog + " with new form 0x{:08x}."), oldForm->formID, formID);
-						}
-						ls->Forms.erase(std::ranges::find(ls->Forms, oldForm));
-					} else if ((formID & 0xFF000000) <= (oldForm->formID & 0xFF000000)) {
-						if (!dontWriteAnythingToLog) {
-							logger::warn(fmt::runtime("Form 0x{:08x} already exists in " + settingNameForLog + "! Skipping identical or earlier loaded form."), formID);
-						}
-						skip = true;
-						continue;
-					}
-				}
-			}
-
-			if (skip)
-				continue;
-
-			if (ls->Ids.insert(formID).second) {
-				ls->Forms.emplace(form);
-			}
+			list->Ids.insert(form->formID);
 		}
-		return ls;
+
+		return list;
 	}
 
-	void CachedFormList::printList(std::string settingNameForLog) const
+	void CachedFormList::printList(const std::string& settingNameForLog) const
 	{
-		std::string formIDs;
-
-		auto it = Forms.begin();
-
-		while (it != Forms.end()) {
-			auto form = *it;
-
-			if (form == nullptr)
-				continue;
-
-			auto formID = form->formID;
-
-			if (it++ != Forms.end()) {
-				formIDs += fmt::format("0x{:08x}, ", formID);
-			} else {
-				formIDs += fmt::format("and 0x{:08x}", formID);
-			}
+		std::vector<std::string> ids;
+		for (const auto id : Ids) {
+			ids.push_back(fmt::format("0x{:08x}", id));
 		}
-		logger::info(fmt::runtime("Forms {} were successfully added to {}"), formIDs, settingNameForLog);
-	}
 
-	bool CachedFormList::Contains(RE::TESForm* form) const
+		logger::info("Forms {} were successfully added to {}", StringHelpers::Join(ids, ", "), settingNameForLog);
+	}
+}
+
+namespace GrassControl::Util
+{
+	static constexpr std::size_t MaxSceneObjects = 4096;
+	static constexpr std::size_t MaxSceneVertices = 262144;
+
+	static bool CollectSceneObjects(RE::NiAVObject* object, std::set<RE::NiAVObject*>& objects)
 	{
-		if (form == nullptr)
+		if (!object)
 			return false;
 
-		return Contains(form->formID);
+		std::vector<RE::NiAVObject*> pending{ object };
+		while (!pending.empty()) {
+			auto* current = pending.back();
+			pending.pop_back();
+			if (!current || !objects.insert(current).second)
+				continue;
+
+			if (objects.size() > MaxSceneObjects || pending.size() > MaxSceneObjects) {
+				objects.clear();
+				return false;
+			}
+
+			if (auto* node = current->AsNode()) {
+				for (const auto& child : node->GetChildren()) {
+					if (pending.size() >= MaxSceneObjects) {
+						objects.clear();
+						return false;
+					}
+
+					if (child.get())
+						pending.push_back(child.get());
+				}
+			}
+		}
+
+		return true;
 	}
 
-	bool CachedFormList::Contains(unsigned int formId) const
+	std::optional<std::string> ClosestShape(RE::NiAVObject* root, const RE::NiPoint3& position)
 	{
-		return this->Ids.contains(formId);
-	}
+		if (!root)
+			return std::nullopt;
 
-	std::unordered_set<RE::TESForm*> CachedFormList::GetAllForms() const
-	{
-		return this->Forms;
-	}
+		std::set<RE::NiAVObject*> objects;
+		if (!CollectSceneObjects(root, objects))
+			return std::nullopt;
 
-	std::unordered_set<RE::FormID> CachedFormList::GetAllFormIDs() const
-	{
-		return this->Ids;
+		float closestDistanceSquared = std::numeric_limits<float>::max();
+		RE::NiAVObject* closestShape = nullptr;
+		std::size_t totalVertices = 0;
+		for (auto* object : objects) {
+			const auto& transform = object->world;
+			if (!std::isfinite(transform.scale) || transform.scale == 0)
+				continue;
+
+			const auto considerVertex = [&](const RE::NiPoint3& local) {
+				const auto world = transform.rotate * (local * transform.scale) + transform.translate;
+				const auto distanceSquared = world.GetSquaredDistance(position);
+				if (std::isfinite(distanceSquared) && distanceSquared < closestDistanceSquared) {
+					closestDistanceSquared = distanceSquared;
+					closestShape = object;
+				}
+			};
+
+			if (auto* legacy = object->AsNiTriShape()) {
+				auto modelData = legacy->GetRuntimeData().spModelData;
+				if (!modelData || !modelData->vertex)
+					continue;
+
+				const auto count = static_cast<std::size_t>(modelData->vertices);
+				if (count > MaxSceneVertices - totalVertices)
+					return {};
+
+				totalVertices += count;
+				for (std::size_t i = 0; i < count; ++i) {
+					considerVertex(modelData->vertex[i]);
+				}
+			} else if (auto* modern = object->AsTriShape()) {
+				// Dynamic and skinned buffers require their own synchronization.
+				if (modern->GetType().get() != RE::BSGeometry::Type::kTriShape ||
+					modern->GetGeometryRuntimeData().skinInstance)
+					continue;
+
+				auto* rendererData = modern->GetGeometryRuntimeData().rendererData;
+				if (!rendererData || !rendererData->rawVertexData)
+					continue;
+
+				const auto stride = rendererData->vertexDesc.GetSize();
+				const auto positionOffset = rendererData->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+				if (stride < sizeof(RE::NiPoint3) || stride > 1024 || positionOffset > stride - sizeof(RE::NiPoint3))
+					continue;
+
+				const auto count = static_cast<std::size_t>(modern->GetTrishapeRuntimeData().vertexCount);
+				if (count > MaxSceneVertices - totalVertices)
+					return {};
+
+				totalVertices += count;
+				for (std::size_t i = 0; i < count; ++i) {
+					RE::NiPoint3 vertex;
+					std::memcpy(&vertex, rendererData->rawVertexData + stride * i + positionOffset, sizeof(vertex));
+					considerVertex(vertex);
+				}
+			}
+		}
+
+		return closestShape ? std::optional<std::string>(closestShape->name.c_str()) : std::nullopt;
 	}
 }

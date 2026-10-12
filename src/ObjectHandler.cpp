@@ -1,21 +1,38 @@
 #include "GrassControl/ObjectHandler.h"
+#include "GrassControl/Util.h"
+#include <CLibUtil/String.hpp>
 
-namespace GrassControl
+namespace
 {
-	void ObjectHandler::AddCliffObjects(CSimpleIniA::TNamesDepend& values, std::unordered_map<RE::FormID, CliffObject>& cliffObjects)
+	using namespace GrassControl;
+
+	std::optional<RE::FormID> ParseObjectKey(const char* key, const std::string& settingName, std::vector<std::string>& parts)
+	{
+		parts = clib_util::string::split(key, "|");
+		if (parts.empty())
+			return std::nullopt;
+
+		for (auto& part : parts)
+			part = Util::StringHelpers::trim(part);
+
+		const auto forms = Util::CachedFormList::TryParse(parts.front(), settingName);
+		if (forms->Empty()) {
+			logger::warn("Invalid formID {} found, skipping", parts.front());
+			return std::nullopt;
+		}
+
+		const auto formID = *forms->GetAllFormIDs().begin();
+		parts.erase(parts.begin());
+		return formID;
+	}
+
+	void AddCliffObjects(CSimpleIniA::TNamesDepend& values, std::unordered_map<RE::FormID, CliffObject>& cliffObjects)
 	{
 		for (const auto& key : values) {
-			std::string keyStr = key.pItem;
-			auto splitKey = clib_util::string::split(keyStr, "|");
-
-			auto foundID = Util::CachedFormList::TryParse(splitKey[0], "CliffObjects", true, false)->GetAllFormIDs();
-			if (foundID.empty()) {
-				logger::warn("Invalid formID {} found, skipping", splitKey[0]);
-				break;
-			}
-
-			auto formID = *foundID.begin();
-			splitKey.erase(splitKey.begin());
+			std::vector<std::string> splitKey;
+			const auto formID = ParseObjectKey(key.pItem, "CliffObjects", splitKey);
+			if (!formID)
+				continue;
 
 			std::unordered_set<std::string> allowedShapes;
 			std::unordered_set<std::string> blockedShapes;
@@ -24,7 +41,7 @@ namespace GrassControl
 
 			for (auto& str : splitKey) {
 				if (str.contains("~")) {
-					str.erase(std::remove(str.begin(), str.end(), '~'), str.end());
+					std::erase(str, '~');
 					blockedShapes.insert(str);
 				} else if (str.contains("Steep") || str.contains("steep")) {
 					steep = true;
@@ -33,36 +50,26 @@ namespace GrassControl
 				}
 			}
 
-			cliffObjects.emplace(formID, CliffObject{ formID, steep, allowedShapes, blockedShapes });
+			cliffObjects.try_emplace(*formID, steep, std::move(allowedShapes), std::move(blockedShapes));
 		}
 	}
 
-	void ObjectHandler::AddPartIgnoredObjects(CSimpleIniA::TNamesDepend& values, std::unordered_map<RE::FormID, PartIgnoredObject>& partIgnoredObjects)
+	void AddPartIgnoredObjects(CSimpleIniA::TNamesDepend& values, std::unordered_map<RE::FormID, PartIgnoredObject>& partIgnoredObjects)
 	{
 		for (const auto& key : values) {
-			std::string keyStr = key.pItem;
-			auto splitKey = clib_util::string::split(keyStr, "|");
+			std::vector<std::string> splitKey;
+			const auto formID = ParseObjectKey(key.pItem, "IgnoredShapes", splitKey);
+			if (!formID)
+				continue;
 
-			auto foundID = Util::CachedFormList::TryParse(splitKey[0], "IgnoredShapes", true, false)->GetAllFormIDs();
-			if (foundID.empty()) {
-				logger::warn("Invalid formID {} found, skipping", splitKey[0]);
-				break;
-			}
-
-			auto formID = *foundID.begin();
-			splitKey.erase(splitKey.begin());
-
-			std::unordered_set<std::string> blockedShapes;
-
-			for (auto& str : splitKey) {
-				blockedShapes.insert(str);
-			}
-
-			partIgnoredObjects.emplace(formID, PartIgnoredObject{ formID, blockedShapes });
+			partIgnoredObjects.try_emplace(*formID, std::unordered_set<std::string>(splitKey.begin(), splitKey.end()));
 		}
 	}
+}
 
-	void ObjectHandler::LoadObjectConfigs(std::unordered_map<RE::FormID, CliffObject>& cliffObjects, std::unordered_map<RE::FormID, PartIgnoredObject>& partIgnoredObjects)
+namespace GrassControl::ObjectHandler
+{
+	void LoadObjectConfigs(std::unordered_map<RE::FormID, CliffObject>& cliffObjects, std::unordered_map<RE::FormID, PartIgnoredObject>& partIgnoredObjects)
 	{
 		const auto configs = Util::Files::ObjectConfigs();
 
@@ -97,40 +104,24 @@ namespace GrassControl
 			ini.GetAllSections(sections);
 			sections.sort(CSimpleIniA::Entry::LoadOrder());
 
-			for (auto& [_section, comment, keyOrder] : sections) {
-				std::string section = _section;
-				if (section.contains('|')) {
-					auto splitSection = clib_util::string::split(section, "|");
+			for (const auto& section : sections) {
+				const std::string_view name(section.pItem);
+				const auto type = name.substr(0, name.find('|'));
+				if (type != "CliffObjects" && type != "IgnoredShapes")
+					continue;
 
-					CSimpleIniA::TNamesDepend values;
-					ini.GetAllKeys(section.c_str(), values);
-					values.sort(CSimpleIniA::Entry::LoadOrder());
+				CSimpleIniA::TNamesDepend values;
+				ini.GetAllKeys(section.pItem, values);
+				values.sort(CSimpleIniA::Entry::LoadOrder());
+				if (values.empty())
+					continue;
 
-					if (values.empty())
-						continue;
-
-					if (splitSection[0] == "CliffObjects") {
-						logger::info("{} grass objects found", values.size());
-						AddCliffObjects(values, cliffObjects);
-					} else if (splitSection[0] == "IgnoredShapes") {
-						logger::info("{} ignored triShapes found", values.size());
-						AddPartIgnoredObjects(values, partIgnoredObjects);
-					}
-
+				if (type == "CliffObjects") {
+					logger::info("{} grass objects found", values.size());
+					AddCliffObjects(values, cliffObjects);
 				} else {
-					CSimpleIniA::TNamesDepend values;
-					ini.GetAllKeys(section.c_str(), values);
-					values.sort(CSimpleIniA::Entry::LoadOrder());
-
-					if (!values.empty()) {
-						if (section == "CliffObjects") {
-							logger::info("{} grass objects found", values.size());
-							AddCliffObjects(values, cliffObjects);
-						} else if (section == "IgnoredShapes") {
-							logger::info("{} ignored triShapes found", values.size());
-							AddPartIgnoredObjects(values, partIgnoredObjects);
-						}
-					}
+					logger::info("{} ignored triShapes found", values.size());
+					AddPartIgnoredObjects(values, partIgnoredObjects);
 				}
 			}
 

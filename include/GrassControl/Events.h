@@ -1,20 +1,22 @@
 #pragma once
 
-#include "GrassControl/Config.h"
-#include "GrassControl/DistantGrass.h"
+#include <RE/B/BSTEvent.h>
+#include <RE/M/MenuOpenCloseEvent.h>
+#include <RE/T/TESCellAttachDetachEvent.h>
 
-class cellLoadEventHandler : public RE::BSTEventSink<RE::TESCellAttachDetachEvent>
+namespace GrassControl::Events
 {
-public:
-	static cellLoadEventHandler* GetSingleton();
-	virtual RE::BSEventNotifyControl ProcessEvent(const RE::TESCellAttachDetachEvent* a_event, RE::BSTEventSource<RE::TESCellAttachDetachEvent>* a_eventSource) override;
-	static void Register();
-};
+	class CellLoadEventHandler final : public RE::BSTEventSink<RE::TESCellAttachDetachEvent>
+	{
+	public:
+		RE::BSEventNotifyControl ProcessEvent(const RE::TESCellAttachDetachEvent*, RE::BSTEventSource<RE::TESCellAttachDetachEvent>*) override;
+	};
 
-class MenuOpenCloseEventHandler : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
-{
-public:
-	static MenuOpenCloseEventHandler* GetSingleton();
-	virtual RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>* a_eventSource) override;
-	static void Register();
-};
+	class MenuOpenCloseEventHandler final : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
+	{
+	public:
+		RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent*, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override;
+	};
+
+	void Register();
+}
