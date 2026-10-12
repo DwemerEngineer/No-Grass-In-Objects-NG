@@ -13,7 +13,7 @@ This is a port of [No Grass in Objects](https://www.nexusmods.com/skyrimspeciale
   ![Screenshot 2024-04-20 080244](https://github.com/AllstaRawR/No-Grass-In-Objects-NG/assets/164591926/af9cced5-e1f9-49b8-8014-863e6195d87f)
 
 2. You will then need to install the latest version of NGIO-NG located in the releases section [here on Github](https://github.com/SaneEngineer/No-Grass-In-Objects-NG/releases/). This needs to be installed to the `\Data\SKSE\Plugins\...` directory of your Skyrim installation.
-3. You will now clock on the `Tools -> Plugins -> Precache Grass` option in your MO2 toolbar, which will launch (and re-launch) Skyrim to generate grass cache in your `Overwrites` folder per the settings in `GrassControl.ini`.
+3. You will now click on the `Tools -> Plugins -> Precache Grass` option in your MO2 toolbar, which will launch (and re-launch) Skyrim to generate grass cache in your `Overwrites` folder per the settings in `GrassControl.ini`.
 4. After you have waited, you should get a pop up message that says, `Grass Caching complete`, at which point you can copy the `\Grass\` folder from `Overwrites` into a new mod in MO2.
 
 ---
@@ -42,26 +42,6 @@ This is a port of [No Grass in Objects](https://www.nexusmods.com/skyrimspeciale
   - Raycasting when used without a grass cache `Use-grass-cache = false` does not apply without loading a save twice. Raycasting will always take effect when a cache is generated with it enabled `Use-grass-cache = true`.
   ***
 
-## Requirements to Build
-
-- [Casual Library](https://github.com/CasualCoder91/CasualLibrary/)
-  - Compile or add libs from the github releases and add to `/external/CasualLibrary1.0/`
-- [CMake](https://cmake.org/)
-  - Add this to your `PATH`
-- [The Elder Scrolls V: Skyrim Special Edition](https://store.steampowered.com/app/489830)
-  - Add the environment variable `Skyrim64Path` to point to the root installation of your game directory (the one containing `SkyrimSE.exe`).
-- [Vcpkg](https://github.com/microsoft/vcpkg)
-  - Add the environment variable `VCPKG_ROOT` with the value as the path to the folder containing vcpkg
-- [Visual Studio Community 2022](https://visualstudio.microsoft.com/)
-  - Desktop development with C++
-
-* [CommonLibSSE](https://github.com/powerof3/CommonLibSSE/tree/dev)
-  - You need to build from the powerof3/dev branch
-  - Add this as as an environment variable `CommonLibSSEPath`
-* [CommonLibVR](https://github.com/alandtse/CommonLibVR/tree/vr)
-  - You need to build from the alandtse/vr branch
-  - Add this as as an environment variable `CommonLibVRPath` instead of /external
-
 ## User Requirements
 
 - [Address Library for SKSE](https://www.nexusmods.com/skyrimspecialedition/mods/32444)
@@ -69,42 +49,10 @@ This is a port of [No Grass in Objects](https://www.nexusmods.com/skyrimspeciale
 - [VR Address Library for SKSEVR](https://www.nexusmods.com/skyrimspecialedition/mods/58101)
   - Needed for VR
 
-## Register Visual Studio as a Generator
-
-- Open `x64 Native Tools Command Prompt`
-- Run `cmake`
-- Close the cmd window
-
-## Building
-
-```
-git clone https://github.com/SaneEngineer/No-Grass-In-Objects-NG.git
-cd No-Grass-In-Objects-NG
-# pull commonlib /extern to override the path settings
-git submodule update --init --recursive
-```
-
-### SSE
-
-```
-cmake --preset vs2022-windows-vcpkg
-cmake --build build --config Release
-```
-
-### AE
-
-```
-cmake --preset vs2022-windows-vcpkg
-cmake --build buildae --config Release
-```
-
-### VR
-
-```
-cmake --preset vs2022-windows-vcpkg-vr
-cmake --build buildvr --config Release
-```
-
 ## License
 
-[MIT](LICENSE)
+[GPL-3.0-or-later](LICENSE) WITH [Modding Exception AND GPL-3.0 Linking Exception (with Corresponding Source)](EXCEPTIONS.md).
+
+The Modded Code is Skyrim and its variants. The Modding Libraries are [SKSE](https://skse.silverlock.org/) and Windows.
+
+The original [MIT license](licenses/LICENSE-MIT) is preserved for code previously released under those terms. Third-party components retain their own licenses; the historical [CommonLibSSE MIT notice](licenses/LICENSE-CommonLibSSE-MIT) and the bundled [Stopwatch license](licenses/LICENSE-Stopwatch) are also retained.
