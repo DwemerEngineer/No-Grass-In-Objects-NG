@@ -36,7 +36,7 @@ namespace GrassControl::Events
 					Plugin::OnMainMenuOpen();
 				}
 			} else if (a_event->menuName == RE::LoadingMenu::MENU_NAME) {
-				Raycast::SetSuspended(a_event->opening);
+				PhysicsRaycast::GetSingleton().SetQueriesDisabled(a_event->opening);
 				if (a_event->opening && Config::ExtendGrassDistance) {
 					DistantGrass::ResetGridUpdates();
 				}

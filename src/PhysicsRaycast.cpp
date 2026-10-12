@@ -57,23 +57,33 @@ namespace
 			box->halfExtents = RE::hkVector4(halfExtentX, halfExtentY, halfExtentZ, std::min({ halfExtentX, halfExtentY, halfExtentZ }));
 		}
 	}
-}
-
-namespace
-{
-	using namespace GrassControl;
-	using namespace GrassControl::Raycast;
 
 	constexpr std::size_t MaxHits = 4096;
 
+	bool ValidRay(const glm::vec4& start, const glm::vec4& end)
+	{
+		const auto difference = end - start;
+		return ValidPoint(start.x, start.y, start.z) && ValidPoint(end.x, end.y, end.z) &&
+		       ValidDimension(glm::length(glm::vec3(difference)));
+	}
+}
+
+namespace GrassControl
+{
+	PhysicsRaycast& PhysicsRaycast::GetSingleton()
+	{
+		static PhysicsRaycast instance;
+		return instance;
+	}
+
 	// The deleting destructor returns this storage to the current Havok heap.
-	RE::hkpSimpleShapePhantom* AllocatePhantom()
+	RE::hkpSimpleShapePhantom* PhysicsRaycast::AllocatePhantom()
 	{
 		auto* router = RE::hkMemoryRouter::GetInstancePtr();
 		return router && router->Heap ? static_cast<RE::hkpSimpleShapePhantom*>(router->Heap->BlockAlloc(sizeof(RE::hkpSimpleShapePhantom))) : nullptr;
 	}
 
-	bool CopyHit(const RE::hkpCdBody& body, const RaycastHelper& settings, bool ignoreCliff, HitResult& hit, bool& invalid)
+	bool PhysicsRaycast::CopyHit(const RE::hkpCdBody& body, const RaycastHelper& settings, bool ignoreCliff, HitResult& hit, bool& invalid)
 	{
 		const auto* root = &body;
 		std::size_t depth = 0;
@@ -112,23 +122,9 @@ namespace
 		return true;
 	}
 
-	std::mutex queryMutex;
-	QueryResources resources;
-	bool suspended = true;
-	RE::FormID errorCell = 0;
-	unsigned errors = 0;
-	bool warningPending = false;
-
-	bool ValidRay(const glm::vec4& start, const glm::vec4& end)
+	PhysicsRaycast::RayResult PhysicsRaycast::CastInWorld(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL& cell, const RaycastHelper& settings, bool ignoreCliff, RE::GrassParam* param, bool volumeQuery)
 	{
-		const auto difference = end - start;
-		return ValidPoint(start.x, start.y, start.z) && ValidPoint(end.x, end.y, end.z) &&
-		       ValidDimension(glm::length(glm::vec3(difference)));
-	}
-
-	RayResult Cast(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL& cell, const RaycastHelper& settings, bool ignoreCliff, RE::GrassParam* param, bool volumeQuery)
-	{
-		if (suspended || !cell.IsAttached() || cell.IsInteriorCell())
+		if (queriesDisabled || !cell.IsAttached() || cell.IsInteriorCell())
 			return {};
 
 		// queryMutex prevents loading suspension while the borrowed world wrapper is retained.
@@ -205,7 +201,7 @@ namespace
 		return { QueryStatus::Success, std::move(collector.hits) };
 	}
 
-	RayResult Query(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL* cell, const RaycastHelper& settings, bool ignoreCliff, RE::GrassParam* param, bool volumeQuery)
+	PhysicsRaycast::RayResult PhysicsRaycast::Query(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL* cell, const RaycastHelper& settings, bool ignoreCliff, RE::GrassParam* param, bool volumeQuery)
 	{
 		if (!settings.Valid || !ValidRay(start, end) || (volumeQuery && settings.Mode == 0))
 			return { QueryStatus::InvalidInput, {} };
@@ -222,7 +218,7 @@ namespace
 
 		RayResult result;
 		try {
-			result = Cast(start, end, *cell, settings, ignoreCliff, param, volumeQuery);
+			result = CastInWorld(start, end, *cell, settings, ignoreCliff, param, volumeQuery);
 		} catch (const std::bad_alloc&) {
 			result = { QueryStatus::Failed, {} };
 			resources.Reset();
@@ -239,19 +235,16 @@ namespace
 
 		return result;
 	}
-}
 
-namespace GrassControl::Raycast
-{
-	void HavokDelete::operator()(RE::hkReferencedObject* object) const
+	void PhysicsRaycast::HavokDelete::operator()(RE::hkReferencedObject* object) const
 	{
 		if (object)
 			object->RemoveReference();
 	}
 
-	RayCollector::RayCollector(const RaycastHelper& settings, bool ignoreCliff) : settings(settings), ignoreCliff(ignoreCliff) { earlyOutHitFraction = 1.0f; }
+	PhysicsRaycast::RayCollector::RayCollector(const RaycastHelper& settings, bool ignoreCliff) : settings(settings), ignoreCliff(ignoreCliff) { earlyOutHitFraction = 1.0f; }
 
-	void RayCollector::AddRayHit(const RE::hkpCdBody& body, const RE::hkpShapeRayCastCollectorOutput& output)
+	void PhysicsRaycast::RayCollector::AddRayHit(const RE::hkpCdBody& body, const RE::hkpShapeRayCastCollectorOutput& output)
 	{
 		if (invalid)
 			return;
@@ -283,13 +276,13 @@ namespace GrassControl::Raycast
 		}
 	}
 
-	BodyCollector::BodyCollector(const RaycastHelper& settings, bool ignoreCliff, const RE::hkpCdBody* queryBody) :
+	PhysicsRaycast::BodyCollector::BodyCollector(const RaycastHelper& settings, bool ignoreCliff, const RE::hkpCdBody* queryBody) :
 		settings(settings), ignoreCliff(ignoreCliff), queryBody(queryBody)
 	{}
 
-	BodyCollector::~BodyCollector() = default;
+	PhysicsRaycast::BodyCollector::~BodyCollector() = default;
 
-	void BodyCollector::addCdBodyPair(const RE::hkpCdBody& a, const RE::hkpCdBody& b)
+	void PhysicsRaycast::BodyCollector::addCdBodyPair(const RE::hkpCdBody& a, const RE::hkpCdBody& b)
 	{
 		if (invalid)
 			return;
@@ -310,21 +303,21 @@ namespace GrassControl::Raycast
 		}
 	}
 
-	void BodyCollector::Reset()
+	void PhysicsRaycast::BodyCollector::Reset()
 	{
 		earlyOut = false;
 		hits.clear();
 		invalid = false;
 	}
 
-	void QueryResources::Reset()
+	void PhysicsRaycast::QueryResources::Reset()
 	{
 		shapePhantom.reset();
 		shape.reset();
 		shapeMode = -1;
 	}
 
-	bool QueryResources::PrepareShape(const RaycastHelper& settings, float halfWidthX, float halfWidthY, float radius, float height)
+	bool PhysicsRaycast::QueryResources::PrepareShape(const RaycastHelper& settings, float halfWidthX, float halfWidthY, float radius, float height)
 	{
 		if (shapeMode != settings.Mode)
 			Reset();
@@ -393,39 +386,39 @@ namespace GrassControl::Raycast
 		return true;
 	}
 
-	RayResult hkpCastRay(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL* cell, const RaycastHelper& settings, bool ignoreCliff)
+	PhysicsRaycast::RayResult PhysicsRaycast::CastRay(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL* cell, const RaycastHelper& settings, bool ignoreCliff)
 	{
 		return Query(start, end, cell, settings, ignoreCliff, nullptr, false);
 	}
 
-	RayResult hkpPhantomCast(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL* cell, RE::GrassParam* param, const RaycastHelper& settings, bool ignoreCliff)
+	PhysicsRaycast::RayResult PhysicsRaycast::CastVolume(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL* cell, RE::GrassParam* param, const RaycastHelper& settings, bool ignoreCliff)
 	{
 		return Query(start, end, cell, settings, ignoreCliff, param, true);
 	}
 
-	bool ValidateSettings(const RaycastHelper& settings)
+	bool PhysicsRaycast::ValidateSettings(const RaycastHelper& settings)
 	{
 		return ValidSettingsValues(settings.Mode, settings.RayHeight, settings.RayDepth, settings.Width, settings.WidthMultiplier, settings.TextureWidth);
 	}
 
-	void SetSuspended(bool value)
+	void PhysicsRaycast::SetQueriesDisabled(bool disabled)
 	{
 		std::scoped_lock lock(queryMutex);
 
-		suspended = value;
+		queriesDisabled = disabled;
 		resources.Reset();
 		errors = 0;
 		warningPending = false;
 	}
 
-	void ReportAllocationFailure()
+	void PhysicsRaycast::ReportAllocationFailure()
 	{
 		std::scoped_lock lock(queryMutex);
 
 		warningPending = true;
 	}
 
-	void Update()
+	void PhysicsRaycast::Update()
 	{
 		bool warn = false;
 
@@ -439,11 +432,11 @@ namespace GrassControl::Raycast
 			RE::DebugMessageBox("NGIO could not complete repeated physics queries. Grass placement used its fallback behavior. See the NGIO log for the affected cell and query status.");
 	}
 
-	std::optional<ShapeNames> GetShapeNames(RE::ObjectRefHandle handle, RE::NiPoint3 position)
+	std::optional<PhysicsRaycast::ShapeNames> PhysicsRaycast::GetShapeNames(RE::ObjectRefHandle handle, RE::NiPoint3 position)
 	{
 		std::scoped_lock lock(queryMutex);
 
-		if (suspended)
+		if (queriesDisabled)
 			return std::nullopt;
 
 		const auto reference = handle.get();

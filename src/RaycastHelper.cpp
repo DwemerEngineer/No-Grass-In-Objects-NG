@@ -17,7 +17,7 @@ namespace GrassControl
 				logger::warn("Invalid raycast collision layer: {}", token);
 		}
 
-		Valid = Raycast::ValidateSettings(*this);
+		Valid = PhysicsRaycast::ValidateSettings(*this);
 		if (!Valid)
 			logger::error("Invalid raycast settings: mode {}, height {}, depth {}, width {}, multiplier {}, texture width {}. Physics filtering will be skipped.", Mode, RayHeight, RayDepth, Width, WidthMultiplier, TextureWidth);
 	}
@@ -52,18 +52,19 @@ namespace GrassControl
 			}
 		}
 
+		auto& physics = PhysicsRaycast::GetSingleton();
 		const glm::vec4 begin(x, y, z - RayDepth, 0), end(x, y, z + RayHeight, 0);
 
-		const auto result = Mode >= 1 ? Raycast::hkpPhantomCast(begin, end, cell, param, *this, ignoreCliff) : Raycast::hkpCastRay(begin, end, cell, *this, ignoreCliff);
+		const auto result = Mode >= 1 ? physics.CastVolume(begin, end, cell, param, *this, ignoreCliff) : physics.CastRay(begin, end, cell, *this, ignoreCliff);
 
-		if (result.status != Raycast::QueryStatus::Success)
+		if (result.status != PhysicsRaycast::QueryStatus::Success)
 			return true;
 
 		bool blocked = false;
 		for (const auto& hit : result.hits) {
 			if (const auto rule = partIgnoredObjects.find(hit.formID); rule != partIgnoredObjects.end()) {
 				const auto point = Mode >= 1 ? glm::vec4(x, y, z, 0) : begin + (end - begin) * hit.hitFraction;
-				const auto names = Raycast::GetShapeNames(hit.reference, RE::NiPoint3{ point.x, point.y, point.z });
+				const auto names = physics.GetShapeNames(hit.reference, RE::NiPoint3{ point.x, point.y, point.z });
 				if (names && Util::MatchesShape(names->shape, names->root, rule->second.ignoredShapes))
 					continue;
 			}
@@ -89,15 +90,16 @@ namespace GrassControl
 		if (grass && (grass->GetUnderwaterState() == RE::TESGrass::GRASS_WATER_STATE::kBelowOnlyAtLeast || grass->GetUnderwaterState() == RE::TESGrass::GRASS_WATER_STATE::kBelowOnlyAtMost))
 			return z;
 
+		auto& physics = PhysicsRaycast::GetSingleton();
 		const glm::vec4 begin(x, y, z, 0), end(x, y, z + 600, 0);
 
-		const auto result = Raycast::hkpCastRay(begin, end, cell, *this);
-		if (result.status != Raycast::QueryStatus::Success)
+		const auto result = physics.CastRay(begin, end, cell, *this);
+		if (result.status != PhysicsRaycast::QueryStatus::Success)
 			return z;
 
 		float height = z;
 		glm::vec3 selectedNormal{};
-		const Raycast::HitResult* selected = nullptr;
+		const PhysicsRaycast::HitResult* selected = nullptr;
 		glm::vec4 selectedPosition = begin;
 		for (const auto& hit : result.hits) {
 			if (!hit.hitCliff || !hit.formID || hit.hitFraction >= 1)
@@ -127,7 +129,7 @@ namespace GrassControl
 		if (const auto rule = cliffObjects.find(selected->formID); rule != cliffObjects.end()) {
 			const auto& info = rule->second;
 			if (!info.allowedShapes.empty() || !info.blockedShapes.empty()) {
-				const auto names = Raycast::GetShapeNames(selected->reference, RE::NiPoint3{ selectedPosition.x, selectedPosition.y, selectedPosition.z });
+				const auto names = physics.GetShapeNames(selected->reference, RE::NiPoint3{ selectedPosition.x, selectedPosition.y, selectedPosition.z });
 				if (!names || !Util::IsShapeAllowed(names->shape, names->root, info.allowedShapes, info.blockedShapes))
 					return z;
 			}
@@ -149,11 +151,11 @@ namespace GrassControl
 
 			const glm::vec4 supportEnd(x + offset.x, y + offset.y, height + maximumHeightDifference, 0);
 
-			const auto support = Raycast::hkpCastRay(supportBegin, supportEnd, cell, *this);
-			if (support.status != Raycast::QueryStatus::Success || support.hits.empty())
+			const auto support = physics.CastRay(supportBegin, supportEnd, cell, *this);
+			if (support.status != PhysicsRaycast::QueryStatus::Success || support.hits.empty())
 				return z;
 
-			const auto& closest = *std::ranges::min_element(support.hits, {}, &Raycast::HitResult::hitFraction);
+			const auto& closest = *std::ranges::min_element(support.hits, {}, &PhysicsRaycast::HitResult::hitFraction);
 			const auto position = supportBegin + (supportEnd - supportBegin) * closest.hitFraction;
 			if (!closest.formID || (!closest.hitCliff && std::abs(position.z - height) > 20))
 				return z;

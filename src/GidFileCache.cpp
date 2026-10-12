@@ -618,8 +618,8 @@ namespace GrassControl::Generation
 			return;
 		}
 
-		// Start publishes the task before the running state. Worker callbacks
-		// must acquire that publication before accessing its progress stream.
+		// Start publishes the task before the running state.
+		// Worker callbacks must acquire that publication before accessing its progress stream.
 		if (runState == RunState::Running && cell) {
 			auto* world = cell->GetRuntimeData().worldSpace;
 			auto* coordinates = cell->GetCoordinates();

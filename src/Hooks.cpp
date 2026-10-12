@@ -139,7 +139,7 @@ namespace GrassControl
 		} catch (const std::bad_alloc&) {
 			hitCliff = false;
 			falseCliff = false;
-			Raycast::ReportAllocationFailure();
+			PhysicsRaycast::GetSingleton().ReportAllocationFailure();
 		}
 		return true;
 	}
@@ -164,7 +164,7 @@ namespace GrassControl
 			}
 		} catch (const std::bad_alloc&) {
 			falseCliff = true;
-			Raycast::ReportAllocationFailure();
+			PhysicsRaycast::GetSingleton().ReportAllocationFailure();
 		}
 
 		return z;

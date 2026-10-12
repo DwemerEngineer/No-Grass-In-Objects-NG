@@ -69,12 +69,12 @@ namespace
 		if (!GetMessagingInterface()->RegisterListener([](MessagingInterface::Message* message) {
 				switch (message->type) {
 				case MessagingInterface::kPreLoadGame:
-					GrassControl::Raycast::SetSuspended(true);
+					GrassControl::PhysicsRaycast::GetSingleton().SetQueriesDisabled(true);
 					break;
 
 				case MessagingInterface::kPostLoadGame:
 				case MessagingInterface::kNewGame:
-					GrassControl::Raycast::SetSuspended(false);
+					GrassControl::PhysicsRaycast::GetSingleton().SetQueriesDisabled(false);
 					break;
 
 				case MessagingInterface::kInputLoaded:
@@ -209,7 +209,7 @@ namespace GrassControl::Plugin
 
 	void Update()
 	{
-		Raycast::Update();
+		PhysicsRaycast::GetSingleton().Update();
 		Generation::Update();
 
 		if (mainMenuUpdates == 0)
@@ -226,7 +226,7 @@ namespace GrassControl::Plugin
 
 	void OnMainMenuOpen()
 	{
-		Raycast::SetSuspended(true);
+		PhysicsRaycast::GetSingleton().SetQueriesDisabled(true);
 		if (Config::UseGrassCache && Config::Updating) {
 			GidFileCache::EnableFileGeneration();
 		}
