@@ -30,6 +30,8 @@ This is a port of [No Grass in Objects](https://www.nexusmods.com/skyrimspeciale
 
 ## Common Issues:
 
+- Multiple `GrassControl.ini` copies under a mod manager
+  - NGIO reads the INI visible through the game's virtual Data directory. Warning preferences update that existing file; defaults are created only when it is missing. Read or save failures are logged rather than creating a replacement. Existing copies in other mods or Overwrite remain under your mod manager's precedence rules; edit the visible winner.
 - Instant completion of Caching or completion of caching for only some worldspaces.
   - Check `Skip-pregenerate-world-spaces` and `Only-pregenerate-world-spaces`, make sure that both of these options are only one line.
 - Crashing while Caching

@@ -1,6 +1,234 @@
 #include "GrassControl/Util.h"
 #include "closest_point.h"
 
+namespace
+{
+	struct FileHandle
+	{
+		HANDLE value;
+
+		explicit FileHandle(HANDLE handle) : value(handle) {}
+
+		FileHandle(const FileHandle&) = delete;
+
+		FileHandle& operator=(const FileHandle&) = delete;
+
+		~FileHandle()
+		{
+			if (value != INVALID_HANDLE_VALUE) {
+				CloseHandle(value);
+			}
+		}
+	};
+
+	bool LastError(std::error_code& error)
+	{
+		error = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+		return false;
+	}
+
+	bool ReadHandle(HANDLE file, std::string& text, std::error_code& error)
+	{
+		constexpr std::size_t MaxTextFileBytes = 16 * 1024 * 1024;
+		std::string contents;
+		char buffer[65536];
+		DWORD count = 0;
+		while (true) {
+			if (!ReadFile(file, buffer, sizeof(buffer), &count, nullptr)) {
+				return LastError(error);
+			}
+
+			if (count == 0) {
+				text = std::move(contents);
+				return true;
+			}
+
+			if (contents.size() + count > MaxTextFileBytes) {
+				error = std::make_error_code(std::errc::file_too_large);
+				return false;
+			}
+
+			contents.append(buffer, count);
+		}
+	}
+
+	bool WriteHandle(HANDLE file, std::string_view text, std::error_code& error)
+	{
+		LARGE_INTEGER start{};
+		if (!SetFilePointerEx(file, start, nullptr, FILE_BEGIN)) {
+			return LastError(error);
+		}
+
+		while (!text.empty()) {
+			DWORD count = 0;
+			const auto chunk = static_cast<DWORD>(std::min<std::size_t>(text.size(), 65536));
+			if (!WriteFile(file, text.data(), chunk, &count, nullptr)) {
+				return LastError(error);
+			}
+
+			if (count == 0) {
+				error = std::error_code(ERROR_WRITE_FAULT, std::system_category());
+				return false;
+			}
+
+			text.remove_prefix(count);
+		}
+
+		if (!SetEndOfFile(file) || !FlushFileBuffers(file)) {
+			return LastError(error);
+		}
+
+		return true;
+	}
+
+	struct CaseInsensitivePathLess
+	{
+		bool operator()(const std::filesystem::path& left, const std::filesystem::path& right) const
+		{
+			return CompareStringOrdinal(left.c_str(), static_cast<int>(left.native().size()), right.c_str(), static_cast<int>(right.native().size()), TRUE) == CSTR_LESS_THAN;
+		}
+	};
+}
+
+namespace Util::Files
+{
+	std::filesystem::path GamePath(const std::filesystem::path& relative)
+	{
+		static const auto root = [] {
+			std::wstring executable(260, L'\0');
+
+			while (true) {
+				const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+				if (length == 0) {
+					throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "Cannot locate the game executable");
+				}
+
+				if (length < executable.size()) {
+					executable.resize(length);
+					return std::filesystem::path(executable).parent_path();
+				}
+
+				if (executable.size() >= 32768) {
+					throw std::system_error(std::make_error_code(std::errc::filename_too_long), "Game executable path is too long");
+				}
+
+				executable.resize(std::min<std::size_t>(executable.size() * 2, 32768));
+			}
+		}();
+		return (root / relative).lexically_normal().make_preferred();
+	}
+
+	std::string PathForLog(const std::filesystem::path& path)
+	{
+		const auto utf8 = path.u8string();
+		return { reinterpret_cast<const char*>(utf8.data()), utf8.size() };
+	}
+
+	bool IsMissing(const std::error_code& error)
+	{
+		return error == std::errc::no_such_file_or_directory ||
+		       (error.category() == std::system_category() && (error.value() == ERROR_FILE_NOT_FOUND || error.value() == ERROR_PATH_NOT_FOUND));
+	}
+
+	bool ReadText(const std::filesystem::path& path, std::string& text, std::error_code& error)
+	{
+		error.clear();
+		const FileHandle file{ CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr) };
+		if (file.value == INVALID_HANDLE_VALUE) {
+			return LastError(error);
+		}
+
+		return ReadHandle(file.value, text, error);
+	}
+
+	bool CreateText(const std::filesystem::path& path, std::string_view text, std::error_code& error)
+	{
+		error.clear();
+		const FileHandle file{ CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr) };
+		if (file.value == INVALID_HANDLE_VALUE) {
+			return LastError(error);
+		}
+
+		return WriteHandle(file.value, text, error);
+	}
+
+	bool UpdateText(const std::filesystem::path& path, const std::function<bool(std::string&)>& update, std::error_code& error)
+	{
+		error.clear();
+
+		// Let the VFS route an existing-file open, then retain that handle for the update.
+		const FileHandle file{ CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr) };
+		if (file.value == INVALID_HANDLE_VALUE) {
+			return LastError(error);
+		}
+
+		std::string contents;
+		if (!ReadHandle(file.value, contents, error)) {
+			return false;
+		}
+
+		const auto original = contents;
+		if (!update(contents)) {
+			error = std::make_error_code(std::errc::invalid_argument);
+			return false;
+		}
+
+		return contents == original || WriteHandle(file.value, contents, error);
+	}
+
+	void SortUniquePaths(std::vector<std::filesystem::path>& paths)
+	{
+		for (auto& path : paths) {
+			path = GamePath(path);
+		}
+
+		// File order determines precedence when object configs repeat a form.
+		std::ranges::sort(paths);
+		std::set<std::filesystem::path, CaseInsensitivePathLess> seen;
+		std::erase_if(paths, [&](const auto& path) { return !seen.insert(path).second; });
+	}
+
+	std::vector<std::filesystem::path> ObjectConfigs()
+	{
+		std::vector<std::filesystem::path> paths;
+		std::error_code error;
+		const auto data = GamePath(L"Data");
+
+		std::filesystem::directory_iterator entry(data, error), end;
+
+		while (!error && entry != end) {
+			const auto& path = entry->path();
+			const auto extension = path.extension().native();
+			auto name = path.stem().native();
+			for (auto& c : name) {
+				if (c >= L'A' && c <= L'Z') {
+					c += L'a' - L'A';
+				}
+			}
+
+			if (CompareStringOrdinal(extension.c_str(), static_cast<int>(extension.size()), L".ini", 4, TRUE) == CSTR_EQUAL && name.find(L"_ngio") != std::wstring::npos) {
+				std::error_code statusError;
+				if (entry->is_regular_file(statusError)) {
+					paths.push_back(path);
+				} else if (statusError) {
+					logger::error("Failed to inspect object config: {}", statusError.message());
+				}
+			}
+
+			if (!error) {
+				entry.increment(error);
+			}
+		}
+
+		if (error) {
+			logger::error("Failed to enumerate object configs: {}", error.message());
+		}
+
+		SortUniquePaths(paths);
+		return paths;
+	}
+}
+
 namespace Util
 {
 	void ReportAndFailTimed(const std::string& a_message)

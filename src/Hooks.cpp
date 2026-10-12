@@ -128,23 +128,13 @@ namespace GrassControl
 		if (!Config::AskedRaycastWarning && Config::RayCast && !GrassControl::Config::UseGrassCache) {
 			Config::AskedRaycastWarning = true;
 
-			CSimpleIniA ini;
-			ini.SetUnicode();
-
-			ini.LoadFile(Config::iniPath.data());
-			ini.SetBoolValue("Debug", "Asked-Enable-Raycast-Warning", Config::AskedRaycastWarning);
-			ini.SaveFile(Config::iniPath.data());
+			Config::WriteBoolSetting("Debug", "Asked-Enable-Raycast-Warning", Config::AskedRaycastWarning);
 
 			auto callback = [](std::uint8_t a_idx) {
 				if (a_idx == 1) {
 					Config::RayCastError = false;
 
-					CSimpleIniA ini;
-					ini.SetUnicode();
-
-					ini.LoadFile(Config::iniPath.data());
-					ini.SetBoolValue("RayCastConfig", "Ray-cast-error-message", Config::RayCastError);
-					ini.SaveFile(Config::iniPath.data());
+					Config::WriteBoolSetting("RayCastConfig", "Ray-cast-error-message", Config::RayCastError);
 				}
 			};
 

@@ -1,5 +1,34 @@
 #pragma once
 
+#include <algorithm>
+#include <filesystem>
+#include <functional>
+#include <set>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <vector>
+
+namespace Util::Files
+{
+	// Logical paths only: resolving backing paths would bypass mod-manager mappings.
+	std::filesystem::path GamePath(const std::filesystem::path& relative);
+
+	std::string PathForLog(const std::filesystem::path& path);
+
+	bool ReadText(const std::filesystem::path& path, std::string& text, std::error_code& error);
+
+	bool CreateText(const std::filesystem::path& path, std::string_view text, std::error_code& error);
+
+	bool UpdateText(const std::filesystem::path& path, const std::function<bool(std::string&)>& update, std::error_code& error);
+
+	bool IsMissing(const std::error_code& error);
+
+	void SortUniquePaths(std::vector<std::filesystem::path>& paths);
+
+	std::vector<std::filesystem::path> ObjectConfigs();
+}
+
 namespace Util
 {
 	inline std::string _ovFilePath;

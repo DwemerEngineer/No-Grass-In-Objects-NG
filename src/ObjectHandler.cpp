@@ -64,7 +64,7 @@ namespace GrassControl
 
 	void ObjectHandler::LoadObjectConfigs(std::unordered_map<RE::FormID, CliffObject>& cliffObjects, std::unordered_map<RE::FormID, PartIgnoredObject>& partIgnoredObjects)
 	{
-		std::vector<std::string> configs = clib_util::distribution::get_configs(R"(Data\)", "_NGIO"sv);
+		const auto configs = Util::Files::ObjectConfigs();
 
 		if (configs.empty()) {
 			logger::warn("No .ini files with _NGIO suffix were found within the Data folder. Overrides will not be loaded");
@@ -74,15 +74,22 @@ namespace GrassControl
 		logger::info("{} matching inis found", configs.size());
 
 		for (const auto& config : configs) {
-			logger::info("Loading object config {}...", config);
+			logger::info("Loading object config {}...", Util::Files::PathForLog(config));
 
 			CSimpleIniA ini;
 			ini.SetUnicode();
 			ini.SetMultiKey();
 			ini.SetAllowKeyOnly();
 
-			if (const auto rc = ini.LoadFile(config.c_str()); rc < 0) {
-				logger::error("error occured while reading INI");
+			std::string contents;
+			std::error_code error;
+			if (!Util::Files::ReadText(config, contents, error)) {
+				logger::error("Failed to read object config: {}", error.message());
+				continue;
+			}
+
+			if (const auto rc = ini.LoadData(contents); rc < 0) {
+				logger::error("Failed to parse object config (code: {})", rc);
 				continue;
 			}
 
