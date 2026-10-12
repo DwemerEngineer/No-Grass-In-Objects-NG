@@ -1,4 +1,3 @@
-# header-only library
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO powerof3/CLibUtil
@@ -7,7 +6,6 @@ vcpkg_from_github(
     HEAD_REF master
 )
 
-# Install codes
 set(CLIBUTIL_SOURCE	${SOURCE_PATH}/include/ClibUtil)
 file(INSTALL ${CLIBUTIL_SOURCE} DESTINATION ${CURRENT_PACKAGES_DIR}/include)
 

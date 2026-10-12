@@ -3,12 +3,13 @@ message("Using toolchain file ${CMAKE_TOOLCHAIN_FILE}.")
 
 project(
   NGIO-NG
-  VERSION 1.6.14
+  VERSION 1.7.0
   LANGUAGES CXX
 )
 
 option(COPY_BUILD "Copy the build output to the Skyrim directory." FALSE)
 option(BUILD_ZIP "Create a 7z archive." TRUE)
+option(NGIO_WAIT_FOR_DEBUGGER "Wait for a debugger when loading a Debug build." OFF)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,26 +33,25 @@ configure_file(
   @ONLY
 )
 
-set(PUBLIC_HEADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include/${PROJECT_NAME})
-
-# Add headers
-file(
-  GLOB_RECURSE
-  headers
-  ${CMAKE_CURRENT_SOURCE_DIR}/include/*.h
-  ${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp
-  ${CMAKE_CURRENT_BINARY_DIR}/include/Version.h
+set(sources
+  src/PCH.cpp
+  src/Main.cpp
+  src/Config.cpp
+  src/ObjectHandler.cpp
+  src/Events.cpp
+  src/Hooks.cpp
+  src/DistantGrass.cpp
+  src/GidFileCache.cpp
+  src/PhysicsRaycast.cpp
+  src/RaycastHelper.cpp
+  src/Profiler.cpp
+  src/Util.cpp
 )
-list(REMOVE_ITEM headers ${CMAKE_CURRENT_SOURCE_DIR}/include/PCH.h)
-
-# Add sources
-file(
-  GLOB_RECURSE
-  sources
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc
-  ${CMAKE_CURRENT_BINARY_DIR}/version.rc
-  ${CMAKE_CURRENT_BINARY_DIR}/include/Version.h
+list(TRANSFORM sources PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
+list(APPEND sources "${CMAKE_CURRENT_BINARY_DIR}/version.rc")
+file(GLOB_RECURSE headers CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/GrassControl/*.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/GrassControl/*.hpp"
 )
 
 source_group(
@@ -71,28 +71,24 @@ add_commonlibsse_plugin(
 
 add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
 
-find_path(SIMPLEINI_INCLUDE_DIRS "SimpleIni.h")
-find_path(CLIBUTIL_INCLUDE_DIRS "CLibUtil/string.hpp")
+find_path(SIMPLEINI_INCLUDE_DIRS "SimpleIni.h" REQUIRED)
+find_path(CLIBUTIL_INCLUDE_DIRS "CLibUtil/string.hpp" REQUIRED)
 
-find_package(GLM REQUIRED)
-include_directories(${GLM_INCLUDE_DIRS})
+find_path(GLM_INCLUDE_DIRS "glm/glm.hpp" REQUIRED)
+target_include_directories(${PROJECT_NAME} PRIVATE ${GLM_INCLUDE_DIRS})
 
 
-set(SOURCES ${headers} ${sources})
 
- target_link_libraries(
-${PROJECT_NAME}
-PRIVATE
-debug ${CMAKE_CURRENT_SOURCE_DIR}/external/CasualLibrary1.0/lib/x64/Debug/CasualLibrary.lib
-optimized ${CMAKE_CURRENT_SOURCE_DIR}/external/CasualLibrary1.0/lib/x64/Release/CasualLibrary.lib
+target_link_libraries(
+  ${PROJECT_NAME}
+  PRIVATE
+  debug ${CMAKE_CURRENT_SOURCE_DIR}/external/CasualLibrary1.0/lib/x64/Debug/CasualLibrary.lib
+  optimized ${CMAKE_CURRENT_SOURCE_DIR}/external/CasualLibrary1.0/lib/x64/Release/CasualLibrary.lib
 )
 target_include_directories(
   ${PROJECT_NAME}
   PRIVATE
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/src>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
-  $<INSTALL_INTERFACE:src>
   ${SIMPLEINI_INCLUDE_DIRS}
   ${CMAKE_CURRENT_SOURCE_DIR}/external/CasualLibrary1.0
   ${CLIBUTIL_INCLUDE_DIRS}
@@ -107,73 +103,18 @@ target_precompile_headers(
   ${SIMPLEINI_INCLUDE_DIRS}/SimpleIni.h
 )
 
-install(
-  DIRECTORY ${PUBLIC_HEADER_DIR}
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
-
-install(
-  TARGETS ${PROJECT_NAME}
-  DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
-
-if(CMAKE_BUILD_TYPE STREQUAL Debug)
-  set(BUILD_NAME Debug)
-else()
-  set(BUILD_NAME Release)
+# Recover understood C++ failures; hardware faults must reach the crash handler.
+target_compile_options(${PROJECT_NAME} PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/EHsc;/GR->")
+if(NGIO_WAIT_FOR_DEBUGGER)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE $<$<CONFIG:Debug>:NGIO_WAIT_FOR_DEBUGGER>)
 endif()
 
+install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION SKSE/Plugins)
+include(cmake/packaging.cmake)
 
-# ---- Post build ----
-if(COPY_BUILD)
-	if(DEFINED SkyrimPath)
-		add_custom_command(
-			TARGET ${PROJECT_NAME}
-			POST_BUILD
-			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> ${SkyrimPath}/SKSE/Plugins/
-			COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_PDB_FILE:${PROJECT_NAME}> ${SkyrimPath}/SKSE/Plugins/
-		)
-	else()
-		message(
-			WARNING
-			"Variable ${SkyrimPath} is not defined. Skipping post-build copy command."
-		)
-	endif()
-endif()
-
-if(BUILD_ZIP)
-	set(ZIP_DIR "${CMAKE_CURRENT_BINARY_DIR}/zip")
-	add_custom_target(build-time-make-directory ALL
-		COMMAND ${CMAKE_COMMAND} -E make_directory "${ZIP_DIR}"
-		"${ZIP_DIR}/SKSE/Plugins/"
-	)
-
-	message("Copying mod into ${ZIP_DIR}.")
-	add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> "${ZIP_DIR}/SKSE/Plugins/"
-	)
-	add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_PDB_FILE:${PROJECT_NAME}> "${ZIP_DIR}/SKSE/Plugins/")
-
-	set(TARGET_ZIP "${PROJECT_NAME}_${PROJECT_VERSION}.7z")
-	message("Zipping ${ZIP_DIR} to ${CMAKE_CURRENT_BINARY_DIR}/${TARGET_ZIP}.")
-	ADD_CUSTOM_COMMAND(
-		TARGET ${PROJECT_NAME}
-		POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E tar cf ${CMAKE_CURRENT_BINARY_DIR}/${TARGET_ZIP} --format=7zip -- .
-		WORKING_DIRECTORY ${ZIP_DIR}
-	)
-endif()
-
-# https://gitlab.kitware.com/cmake/cmake/-/issues/24922#note_1371990
 if(MSVC_VERSION GREATER_EQUAL 1936 AND MSVC_IDE) # 17.6+
-	# When using /std:c++latest, "Build ISO C++23 Standard Library Modules" defaults to "Yes".
-	# Default to "No" instead.
-	#
-	# As of CMake 3.26.4, there isn't a way to control this property
-	# (https://gitlab.kitware.com/cmake/cmake/-/issues/24922),
-	# We'll use the MSBuild project system instead
-	# (https://learn.microsoft.com/en-us/cpp/build/reference/vcxproj-file-structure)
+	# Disable the STL module build enabled implicitly by /std:c++latest.
+	# Set the MSBuild property directly: https://gitlab.kitware.com/cmake/cmake/-/issues/24922
 	file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/Directory.Build.props" CONTENT [==[
 <Project>
   <ItemDefinitionGroup>

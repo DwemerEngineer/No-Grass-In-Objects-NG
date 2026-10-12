@@ -10,7 +10,9 @@
       "name": "common",
       "hidden": true,
       "cacheVariables": {
-        "SKSE_SUPPORT_XBYAK": "ON"
+        "SKSE_SUPPORT_XBYAK": "ON",
+        "COPY_BUILD": "OFF",
+        "NGIO_WAIT_FOR_DEBUGGER": "OFF"
       },
       "binaryDir": "${sourceDir}/build"
     },
@@ -26,21 +28,11 @@
     },
     {
       "name": "buildtype-debug-msvc",
-      "hidden": true,
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_FLAGS_RELEASE": "/EHa",
-        "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "/CGTHREADS:8 /DEBUG:FULL"
-      }
+      "hidden": true
     },
     {
       "name": "buildtype-release-msvc",
-      "hidden": true,
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_CXX_FLAGS_RELEASE": "/EHa /GR- /Qpar",
-        "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "/CGTHREADS:8 /OPT:ICF=4 /DEBUG"
-      }
+      "hidden": true
     },
     {
       "name": "x64",
