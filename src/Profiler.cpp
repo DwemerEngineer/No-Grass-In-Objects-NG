@@ -1,9 +1,6 @@
 #include "GrassControl/Profiler.h"
 #include "GrassControl/Util.h"
 
-#include <algorithm>
-#include <numeric>
-
 namespace GrassControl
 {
 	void Profiler::Begin()

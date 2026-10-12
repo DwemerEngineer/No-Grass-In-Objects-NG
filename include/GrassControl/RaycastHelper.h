@@ -1,20 +1,8 @@
 #pragma once
 
-#include <glm/glm.hpp>
-
 #include <GrassControl/Config.h>
 #include <GrassControl/ObjectHandler.h>
 #include <GrassControl/Util.h>
-#include <memory>
-#include <string>
-#include <unordered_map>
-
-namespace RE
-{
-	struct GrassParam;
-
-	class TESObjectLAND;
-}
 
 namespace GrassControl
 {

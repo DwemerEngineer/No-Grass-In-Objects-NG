@@ -1,6 +1,5 @@
 #include "GrassControl/ObjectHandler.h"
 #include "GrassControl/Util.h"
-#include <CLibUtil/String.hpp>
 
 namespace
 {

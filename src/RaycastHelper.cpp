@@ -1,10 +1,6 @@
 #include "GrassControl/RaycastHelper.h"
 #include "GrassControl/PhysicsRaycast.h"
 
-#include <algorithm>
-#include <array>
-#include <cmath>
-
 namespace GrassControl
 {
 	RaycastHelper::RaycastHelper(float rayHeight, float rayDepth, const std::string& layers, std::unique_ptr<Util::CachedFormList> ignored, std::unique_ptr<Util::CachedFormList> textures, std::unique_ptr<Util::CachedFormList> cliffs, std::unique_ptr<Util::CachedFormList> grassTypes) :

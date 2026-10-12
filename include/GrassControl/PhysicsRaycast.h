@@ -1,28 +1,5 @@
 #pragma once
 
-#include <RE/B/BSPointerHandle.h>
-#include <RE/B/bhkShape.h>
-#include <RE/H/hkVector4.h>
-#include <RE/H/hkpRayHitCollector.h>
-#include <RE/H/hkpSimpleShapePhantom.h>
-#include <RE/N/NiPoint3.h>
-#include <glm/glm.hpp>
-
-#include <cstddef>
-#include <cstdint>
-#include <memory>
-#include <mutex>
-#include <optional>
-#include <string>
-#include <vector>
-
-namespace RE
-{
-	struct GrassParam;
-
-	class TESObjectCELL;
-}
-
 namespace GrassControl
 {
 	class RaycastHelper;

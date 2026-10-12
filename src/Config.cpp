@@ -1,8 +1,5 @@
 #include "GrassControl/Util.h"
 #include <GrassControl/Config.h>
-#include <SimpleIni.h>
-
-#include <mutex>
 
 namespace
 {

@@ -2,22 +2,6 @@
 
 #include "GrassControl/Util.h"
 
-#include <climits>
-#include <fstream>
-#include <list>
-#include <memory>
-#include <mutex>
-#include <string>
-#include <unordered_set>
-#include <vector>
-
-namespace RE
-{
-	class TESObjectCELL;
-
-	class TESWorldSpace;
-}
-
 namespace GrassControl::GidFileCache
 {
 	void SetHelperInstalled(bool installed);

@@ -1,14 +1,10 @@
 #include "GrassControl/Main.h"
-#include "CasualLibrary.hpp"
 #include "GrassControl/Config.h"
 #include "GrassControl/Events.h"
 #include "GrassControl/GidFileCache.h"
 #include "GrassControl/PhysicsRaycast.h"
 #include "GrassControl/RaycastHelper.h"
 #include "GrassControl/Util.h"
-
-#include <atomic>
-#include <memory>
 
 using namespace SKSE;
 using namespace SKSE::log;

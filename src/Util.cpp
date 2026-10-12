@@ -1,7 +1,5 @@
 #include "GrassControl/Util.h"
 
-#include <set>
-
 namespace
 {
 	struct FileHandle

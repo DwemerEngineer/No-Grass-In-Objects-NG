@@ -1,9 +1,5 @@
 #pragma once
 
-#include <mutex>
-#include <utility>
-#include <vector>
-
 #include <GrassControl/Stopwatch.hpp>
 
 namespace GrassControl

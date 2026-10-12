@@ -5,9 +5,37 @@
 #define NOMINMAX
 #define _SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <bit>
+#include <charconv>
+#include <chrono>
+#include <climits>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iterator>
+#include <list>
+#include <memory>
+#include <mutex>
+#include <new>
+#include <numeric>
+#include <optional>
 #include <ranges>
+#include <set>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #define GLM_FORCE_INLINE
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
@@ -25,6 +53,10 @@
 #include "Version.h"
 
 #include <Windows.h>
+
+#include <CLibUtil/String.hpp>
+#include <CasualLibrary.hpp>
+#include <SimpleIni.h>
 #include <xbyak/xbyak.h>
 
 #include <spdlog/sinks/basic_file_sink.h>

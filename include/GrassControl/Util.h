@@ -1,32 +1,5 @@
 #pragma once
 
-#include <cstdint>
-
-#include <RE/B/BSCoreTypes.h>
-
-#include <algorithm>
-#include <charconv>
-#include <filesystem>
-#include <functional>
-#include <iterator>
-#include <memory>
-#include <optional>
-#include <ranges>
-#include <sstream>
-#include <string>
-#include <string_view>
-#include <system_error>
-#include <unordered_set>
-#include <utility>
-#include <vector>
-
-namespace RE
-{
-	class NiAVObject;
-
-	class NiPoint3;
-}
-
 namespace GrassControl::Util::Files
 {
 	// Logical paths only: resolving backing paths would bypass mod-manager mappings.

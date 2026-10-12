@@ -1,13 +1,5 @@
 #pragma once
 
-#include <cstdint>
-
-#include <RE/B/BSCoreTypes.h>
-
-#include <string>
-#include <unordered_map>
-#include <unordered_set>
-
 namespace GrassControl
 {
 	struct CliffObject

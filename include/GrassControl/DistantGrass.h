@@ -2,24 +2,6 @@
 
 #include "GrassControl/Util.h"
 
-#include <cstdint>
-#include <functional>
-#include <memory>
-#include <string>
-#include <unordered_map>
-#include <vector>
-
-namespace RE
-{
-	class BGSGrassManager;
-
-	class TES;
-
-	class TESObjectCELL;
-
-	class TESWorldSpace;
-}
-
 namespace GrassControl::DistantGrass
 {
 	class CellInfo final

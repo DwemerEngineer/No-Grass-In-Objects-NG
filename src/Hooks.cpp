@@ -1,4 +1,3 @@
-#include "CasualLibrary.hpp"
 #include "GrassControl/Config.h"
 #include "GrassControl/DistantGrass.h"
 #include "GrassControl/GidFileCache.h"
@@ -7,9 +6,6 @@
 #include "GrassControl/Profiler.h"
 #include "GrassControl/RaycastHelper.h"
 #include "GrassControl/Util.h"
-#include <array>
-#include <bit>
-#include <new>
 
 using namespace Xbyak;
 

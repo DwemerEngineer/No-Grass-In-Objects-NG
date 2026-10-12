@@ -1,12 +1,6 @@
 #include "GrassControl/PhysicsRaycast.h"
 #include "GrassControl/RaycastHelper.h"
 
-#include <cmath>
-#include <memory>
-#include <mutex>
-#include <new>
-#include <optional>
-
 namespace
 {
 	inline constexpr float HavokScale = 0.0142875f;

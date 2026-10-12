@@ -100,7 +100,6 @@ target_precompile_headers(
   ${PROJECT_NAME}
   PRIVATE
   include/PCH.h
-  ${SIMPLEINI_INCLUDE_DIRS}/SimpleIni.h
 )
 
 # Recover understood C++ failures; hardware faults must reach the crash handler.
