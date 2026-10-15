@@ -40,6 +40,7 @@ namespace GrassControl
 		auto* writerThread = reinterpret_cast<volatile long*>(lock);
 		auto* state = writerThread + 1;
 		const auto thread = static_cast<long>(GetCurrentThreadId());
+
 		if (*writerThread == thread) {
 			_InterlockedIncrement(state);
 			return;
@@ -48,6 +49,7 @@ namespace GrassControl
 		const bool watched = lock == watchedLock.load(std::memory_order_relaxed);
 		if (watched)
 			watchedWriters.fetch_add(1);
+
 		for (std::uint32_t tries = 0; _InterlockedCompareExchange(state, static_cast<long>(0x80000001), 0);) {
 			if (tries < 10000) {
 				++tries;
@@ -56,8 +58,10 @@ namespace GrassControl
 				Sleep(1);
 			}
 		}
+
 		if (watched)
 			watchedWriters.fetch_sub(1);
+
 		*writerThread = thread;
 		_mm_mfence();
 	}
@@ -70,17 +74,21 @@ namespace GrassControl
 
 		watchedLock.store(&world->worldLock, std::memory_order_relaxed);
 		std::unique_lock lock(mutex);
+
 		for (;;) {
 			const auto now = std::chrono::steady_clock::now();
 			if (!readers && now - opened >= WindowLength)
 				reopenAt = std::max(reopenAt, opened + WindowLength + WriterGap);
+
 			const bool writerWaiting = watchedWriters.load() != 0;
 			if (readers && owner == world && now - opened < WindowLength && !writerWaiting) {
 				++readers;
 				return;
 			}
+
 			if (!readers && now >= reopenAt && !writerWaiting)
 				break;
+
 			if (readers) {
 				drained.wait(lock);
 			} else {
@@ -91,10 +99,12 @@ namespace GrassControl
 				lock.lock();
 			}
 		}
+
 		owner = world;
 		const auto now = std::chrono::steady_clock::now();
 		if (now - opened >= WindowLength)
 			opened = now;
+
 		readers = 1;
 		world->worldLock.LockForRead();
 	}
@@ -107,12 +117,15 @@ namespace GrassControl
 		std::scoped_lock lock(mutex);
 		if (--readers)
 			return;
+
 		owner->worldLock.UnlockForRead();
 		owner = nullptr;
+
 		const auto now = std::chrono::steady_clock::now();
 		reopenAt = now;
 		if (now - opened >= WindowLength || watchedWriters.load())
 			reopenAt += WriterGap;
+
 		drained.notify_all();
 	}
 
@@ -152,6 +165,7 @@ namespace GrassControl
 	bool PhysicsRaycast::ValidRay(const glm::vec4& start, const glm::vec4& end)
 	{
 		const auto difference = end - start;
+
 		return ValidPoint(start.x, start.y, start.z) && ValidPoint(end.x, end.y, end.z) &&
 		       ValidDimension(glm::length(glm::vec3(difference)));
 	}
@@ -160,6 +174,7 @@ namespace GrassControl
 	{
 		if (installed)
 			return;
+
 		SKSE::GetTrampoline().write_branch<5>(RELOCATION_ID(66977, 68234).address(), PhysicsRaycast::EnterWriteLock);
 		installed = true;
 	}
@@ -343,8 +358,10 @@ namespace GrassControl
 		}
 
 		queryCounts[static_cast<std::size_t>(result.status)].fetch_add(1, std::memory_order_relaxed);
+
 		if (result.status == QueryStatus::Success && !result.hits.empty())
 			queriesWithHits.fetch_add(1, std::memory_order_relaxed);
+
 		if (result.status == QueryStatus::Unavailable) {
 			lastUnavailableReason = result.unavailableReason;
 			++unavailableQueries;
