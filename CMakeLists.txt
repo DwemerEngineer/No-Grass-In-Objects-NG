@@ -89,15 +89,12 @@ target_link_libraries(
   ${PROJECT_NAME}
   PRIVATE
   TBB::tbb
-  debug ${CMAKE_CURRENT_SOURCE_DIR}/external/CasualLibrary1.0/lib/x64/Debug/CasualLibrary.lib
-  optimized ${CMAKE_CURRENT_SOURCE_DIR}/external/CasualLibrary1.0/lib/x64/Release/CasualLibrary.lib
 )
 target_include_directories(
   ${PROJECT_NAME}
   PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
   ${SIMPLEINI_INCLUDE_DIRS}
-  ${CMAKE_CURRENT_SOURCE_DIR}/external/CasualLibrary1.0
   ${CLIBUTIL_INCLUDE_DIRS}
   PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
