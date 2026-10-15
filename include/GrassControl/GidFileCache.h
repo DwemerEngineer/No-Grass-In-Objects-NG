@@ -47,6 +47,7 @@ namespace GrassControl::Generation
 		void Finish();
 		bool HasDone(const std::string& key) const;
 		void MarkDone(const std::string& key);
+		void LogStepTime();
 
 		mutable std::mutex mutex;
 		std::ofstream progressFile;
@@ -61,6 +62,8 @@ namespace GrassControl::Generation
 		int doneCells = 0;
 		int uGrids = 5;
 		int uHalf = 2;
+		std::optional<std::pair<int, int>> stepCell;
+		std::chrono::steady_clock::time_point stepStarted;
 	};
 
 	enum class RunState
@@ -77,6 +80,9 @@ namespace GrassControl::Generation
 	inline std::atomic<bool> awaitingDispatch{ false };
 	inline std::atomic<std::uint64_t> lastActivity{ 0 };
 	inline std::atomic<bool> patchesApplied{ false };
+	// Time spent building grass since the current step moved the player, to tell grass building from cell loading.
+	inline std::atomic<std::int64_t> stepBuildMicroseconds{ 0 };
+	inline std::atomic<int> stepBuiltCells{ 0 };
 
 	void InstallHooks();
 
@@ -92,7 +98,7 @@ namespace GrassControl::Generation
 
 	void OnGrassDispatch();
 
-	void OnGrassCreated(RE::TESObjectCELL* cell);
+	void OnGrassCreated(RE::TESObjectCELL* cell, std::chrono::steady_clock::duration buildTime);
 
 	int GetGrassGridRadius();
 }

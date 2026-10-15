@@ -160,12 +160,7 @@ namespace GrassControl
 	{
 		if (installed)
 			return;
-		const auto address = RELOCATION_ID(66977, 68234).address();
-		if (REL::make_pattern<"E9">().match(address) || REL::make_pattern<"FF 25">().match(address)) {
-			logger::warn("World write lock is already hooked; retaining its handler and using timed query windows.");
-			return;
-		}
-		SKSE::GetTrampoline().write_branch<5>(address, PhysicsRaycast::EnterWriteLock);
+		SKSE::GetTrampoline().write_branch<5>(RELOCATION_ID(66977, 68234).address(), PhysicsRaycast::EnterWriteLock);
 		installed = true;
 	}
 
@@ -468,7 +463,7 @@ namespace GrassControl
 			Reset();
 
 		if (!shape) {
-			auto* storage = RE::malloc<RE::bhkShape>(0x28);
+			auto* storage = RE::malloc<RE::bhkShape>(sizeof(RE::bhkShape));
 			if (!storage)
 				return false;
 

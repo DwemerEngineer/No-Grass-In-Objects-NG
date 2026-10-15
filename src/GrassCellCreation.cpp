@@ -75,10 +75,9 @@ namespace GrassControl::DistantGrass
 		}
 
 		// Record the filtering actually completed so unavailable collision leaves the cell eligible for retry.
-		// Grass read from a cache file is never placed here, so it does not wait for collision.
 		const auto* world = cell->GetRuntimeData().worldSpace;
 		const bool fromCache = globals::AllowLoadGrass() && world && info->HasCacheFile(world->editorID.c_str());
-		const bool requireCollision = !manager->generateGrassDataFiles && wanted == GrassState::Active && !fromCache;
+		const bool requireCollision = wanted == GrassState::Active && GrassPatchCreation::NeedsCollision(manager, fromCache);
 		GrassPatchCreation patchCreation(cell, abort);
 		if (!patchCreation.PrepareCell(requireCollision)) {
 			info->ClearTask();
@@ -131,6 +130,7 @@ namespace GrassControl::DistantGrass
 			                                          wanted;
 		}
 		lock.unlock();
+
 		if (unfiltered && !*abort)
 			PhysicsRaycast::GetSingleton().DeferCell(cell);
 	}
@@ -180,6 +180,7 @@ namespace GrassControl::DistantGrass
 			std::scoped_lock lock(mutex);
 			stopping = true;
 		}
+
 		arena.execute([&] { tasks.wait(); });
 		for (const auto& job : jobs)
 			ReleaseTask(job.abort);
@@ -196,10 +197,12 @@ namespace GrassControl::DistantGrass
 				break;
 			}
 		}
+
 		if (!stopping && !callbacks && !jobs.empty()) {
 			++callbacks;
 			return true;
 		}
+
 		return false;
 	}
 
@@ -211,6 +214,7 @@ namespace GrassControl::DistantGrass
 			busyBlocks.erase(block);
 			runInline = Dispatch();
 		}
+
 		blockReleased.notify_all();
 		if (runInline)
 			Work();
@@ -225,22 +229,28 @@ namespace GrassControl::DistantGrass
 		bool runInline;
 		bool submitted = false;
 		RE::AddCellGrassTask::FromAbort(abort)->AddReference();
+
 		const stl::scope_exit releaseUnsubmitted([&] {
 			if (!submitted)
 				ReleaseTask(abort);
 		});
+
 		try {
 			std::scoped_lock lock(mutex);
 			if (stopping)
 				return false;
+
 			jobs.push_back({ manager, cell, abort, GrassBlockOf(cell), coordinates->cellX, coordinates->cellY });
 			submitted = true;
 			runInline = Dispatch();
+
 		} catch (const std::bad_alloc&) {
 			return false;
 		}
+
 		if (runInline)
 			Work();
+
 		return true;
 	}
 
@@ -255,9 +265,11 @@ namespace GrassControl::DistantGrass
 		const auto* tes = RE::TES::GetSingleton();
 		const int centerX = tes ? tes->currentGridX : 0;
 		const int centerY = tes ? tes->currentGridY : 0;
+
 		std::scoped_lock blocks(blockMutex);
 		auto best = jobs.end();
 		int bestDistance = INT_MAX;
+
 		for (auto it = jobs.begin(); it != jobs.end(); ++it) {
 			const int distance = std::max(std::abs(it->x - centerX), std::abs(it->y - centerY));
 			if (distance < bestDistance && !busyBlocks.contains(it->block)) {
@@ -265,6 +277,7 @@ namespace GrassControl::DistantGrass
 				bestDistance = distance;
 			}
 		}
+
 		if (best == jobs.end())
 			return std::nullopt;
 
@@ -272,60 +285,81 @@ namespace GrassControl::DistantGrass
 		busyBlocks.insert(job.block);
 		jobs.erase(best);
 		running.fetch_add(1, std::memory_order_relaxed);
+
 		return job;
+	}
+
+	std::optional<GrassWorkers::Job> GrassWorkers::Next()
+	{
+		std::scoped_lock lock(mutex);
+		std::optional<Job> job;
+		if (!stopping && !jobs.empty()) {
+			try {
+				job = Take();
+			} catch (const std::bad_alloc&) {
+				// Without memory to reserve its block the job cannot build, but is still taken so it can be deferred.
+				job = jobs.front();
+				job->reserved = false;
+				jobs.pop_front();
+			}
+		}
+
+		// Ending under the queue lock lets a job submitted afterwards dispatch a new callback.
+		if (!job)
+			--callbacks;
+
+		return job;
+	}
+
+	void GrassWorkers::Run(const Job& job)
+	{
+		const stl::scope_exit finish([&] {
+			ReleaseTask(job.abort);
+			if (job.reserved) {
+				running.fetch_sub(1, std::memory_order_relaxed);
+				ReleaseBlock(job.block);
+			}
+		});
+
+		try {
+			if (job.reserved) {
+				BuildCellGrass(job.manager, job.cell, job.abort);
+				return;
+			}
+		} catch (const std::bad_alloc&) {
+		}
+
+		if (!*job.abort)
+			DeferUnbuilt(job);
+	}
+
+	// Leaves the cell as LOD grass and retries it once memory is available.
+	void GrassWorkers::DeferUnbuilt(const Job& job)
+	{
+		{
+			std::scoped_lock lock(gridState.cellMapMutex);
+			if (const auto info = gridState.cellGrid ? gridState.cellGrid->FindByCell(job.cell) : nullptr) {
+				info->ClearTask();
+				info->have = GrassState::Lod;
+			}
+		}
+
+		ClearCellAddGrassTask(job.cell);
+		auto& physics = PhysicsRaycast::GetSingleton();
+		physics.DeferCell(job.cell);
+		physics.ReportAllocationFailure();
 	}
 
 	void GrassWorkers::Work()
 	{
-		std::unique_lock queueLock(mutex, std::defer_lock);
-		const stl::scope_exit finishCallback([&] {
-			if (!queueLock.owns_lock())
-				queueLock.lock();
+		try {
+			PhysicsRaycast::EnsureThreadMemory();
+			while (const auto job = Next())
+				Run(*job);
+		} catch (...) {
+			std::scoped_lock lock(mutex);
 			--callbacks;
-		});
-		PhysicsRaycast::EnsureThreadMemory();
-		for (;;) {
-			std::optional<Job> job;
-			bool reserved = true;
-			queueLock.lock();
-			{
-				if (stopping || jobs.empty())
-					return;
-				try {
-					job = Take();
-				} catch (const std::bad_alloc&) {
-					job = jobs.front();
-					jobs.pop_front();
-					reserved = false;
-				}
-				if (!job)
-					return;
-			}
-			queueLock.unlock();
-
-			const stl::scope_exit finish([&] {
-				ReleaseTask(job->abort);
-				if (reserved) {
-					running.fetch_sub(1, std::memory_order_relaxed);
-					ReleaseBlock(job->block);
-				}
-			});
-			try {
-				if (!reserved)
-					throw std::bad_alloc();
-				BuildCellGrass(job->manager, job->cell, job->abort);
-			} catch (const std::bad_alloc&) {
-				if (*job->abort)
-					continue;
-				std::scoped_lock lock(gridState.cellMapMutex);
-				if (const auto info = gridState.cellGrid ? gridState.cellGrid->FindByCell(job->cell) : nullptr) {
-					info->ClearTask();
-					info->have = GrassState::Lod;
-				}
-				ClearCellAddGrassTask(job->cell);
-				PhysicsRaycast::GetSingleton().DeferCell(job->cell);
-				PhysicsRaycast::GetSingleton().ReportAllocationFailure();
-			}
+			throw;
 		}
 	}
 
@@ -358,14 +392,17 @@ namespace GrassControl::DistantGrass
 		const auto add = [&](RE::TESLandTexture* texture) {
 			if (!texture)
 				return;
+
 			for (auto* grass : texture->textureGrassList) {
 				const char* model = grass ? grass->GetModel() : nullptr;
 				if (model && *model)
 					models.push_back(model);
 			}
 		};
+
 		for (auto* texture : data->defQuadTextures)
 			add(texture);
+
 		for (const auto& quadrant : data->quadTextures) {
 			for (auto* texture : quadrant)
 				add(texture);
@@ -380,9 +417,11 @@ namespace GrassControl::DistantGrass
 					queued = true;
 				}
 			}
+
 			if (queued && !thread.joinable())
 				thread = std::jthread([this](std::stop_token stop) { Work(stop); });
 		}
+
 		if (queued)
 			ready.notify_all();
 	}
@@ -406,6 +445,7 @@ namespace GrassControl::DistantGrass
 				std::unique_lock lock(mutex);
 				if (!ready.wait(lock, stop, [&] { return !jobs.empty(); }))
 					return;
+
 				model = std::move(jobs.front());
 				jobs.pop_front();
 				started = generation;
@@ -418,9 +458,11 @@ namespace GrassControl::DistantGrass
 			if (auto* manager = RE::BGSGrassManager::GetSingleton()) {
 				RE::BSWriteLockGuard grassLock(manager->lock);
 				RE::BSModelDB::DBTraits::ArgsType args;
+
 				if (RE::BSModelDB::Demand(model.c_str(), node, args) != RE::BSResource::ErrorCode::kNone)
 					node.reset();
 			}
+
 			// Let waiting grass workers take the lock between models.
 			std::this_thread::yield();
 			if (!node)
@@ -457,10 +499,12 @@ namespace GrassControl::DistantGrass
 		RE::NiPointer<RE::NiNode> shard(RE::NiNode::Create(ShardCapacity));
 		if (!shard)
 			return nullptr;
+
 		// The root's culling only visits children with bounds or kAlwaysDraw, and a shard's bound is not maintained.
 		shard->GetFlags().set(RE::NiAVObject::Flag::kAlwaysDraw);
 		shard->world = root->world;
 		attachChild(root, shard.get(), true);
+
 		return shards.emplace_back(std::move(shard)).get();
 	}
 
@@ -595,6 +639,7 @@ namespace GrassControl::DistantGrass
 			RE::AddCellGrassTask::Set(cell->extraList, nullptr);
 			RE::AddCellGrassTask::Queue(cell);
 		}
+
 		task->Release();
 	}
 
@@ -614,6 +659,7 @@ namespace GrassControl::DistantGrass
 		auto& workers = GrassWorkers::Get();
 		workers.AcquireBlock(cell);
 		const stl::scope_exit releaseBlock([&] { workers.ReleaseBlock(cell); });
+
 		bool none = false;
 		BuildCellGrass(manager, cell, abort ? abort : &none);
 	}

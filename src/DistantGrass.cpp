@@ -18,6 +18,7 @@ namespace GrassControl::DistantGrass
 
 		std::shared_lock lock(mutex);
 		const auto it = worlds.find(Lower(world));
+
 		return it != worlds.end() && it->second.contains(Key(x, y));
 	}
 
@@ -64,10 +65,12 @@ namespace GrassControl::DistantGrass
 
 		int x = 0;
 		int y = 0;
+
 		const char* xEnd = name.data() + ySplit;
 		const char* yEnd = name.data() + name.size();
 		const auto parsedX = std::from_chars(name.data() + xSplit + 1, xEnd, x);
 		const auto parsedY = std::from_chars(name.data() + ySplit + 1, yEnd, y);
+
 		if (parsedX.ec != std::errc{} || parsedX.ptr != xEnd || parsedY.ec != std::errc{} || parsedY.ptr != yEnd ||
 			x < INT16_MIN || x > INT16_MAX || y < INT16_MIN || y > INT16_MAX)
 			return;
@@ -184,17 +187,21 @@ namespace GrassControl::DistantGrass
 		return gridState.grassGridRadius;
 	}
 
+	// LoadLand sets this flag once it has started loading the land's data.
+	static constexpr std::uint32_t LandDataLoaded = 1 << 3;
+
 	// Coordinate-created cells have no LAND form, so their terrain is loaded through the worldspace.
 	static void LoadTerrain(RE::TESObjectCELL* cell)
 	{
 		auto* land = RE::GetLand(cell);
-		if (!land || (Memory::Internal::read<std::uint8_t>(&land->data.flags) & 8) != 0)
+		if (!land || (land->data.flags.underlying() & LandDataLoaded) != 0)
 			return;
 
 		if (!land->GetFile(-1)) {
 			land->data.flags.set(RE::OBJ_LAND::Flag::kVertexNormals_HeightMap, RE::OBJ_LAND::Flag::kVertexColors,
 				RE::OBJ_LAND::Flag::kLayers, RE::OBJ_LAND::Flag::kMPCD);
 		}
+
 		RE::LoadLand(land);
 	}
 
@@ -446,8 +453,10 @@ namespace GrassControl::DistantGrass
 			gridState.gridUpdatesEnabled = false;
 			gridState.gridUpdatePending = false;
 			gridState.streamingAllowed = false;
+
 			if (gridState.cellGrid)
 				gridState.cellGrid->QueueDistantCells(nullptr, 0, 0, 0, 0);
+
 		} else if (!gridState.gridUpdatesEnabled) {
 			return;
 		}
@@ -455,9 +464,11 @@ namespace GrassControl::DistantGrass
 		const auto started = std::chrono::steady_clock::now();
 		const int grassRadius = GetGrassGridRadius();
 		const int uGrids = globals::GridsToLoad();
+
 		auto* world = tes->GetRuntimeData2().worldSpace;
 		const int centerX = tes->currentGridX;
 		const int centerY = tes->currentGridY;
+
 		if (auto* cacheOnly = gridState.cacheOnlyCells.get()) {
 			cacheOnly->FreeDiscardedCells();
 			if (addType <= 0)
@@ -480,9 +491,12 @@ namespace GrassControl::DistantGrass
 				lock.lock();
 				return true;
 			}
+
 			if (lock.try_lock())
 				return true;
+
 			gridState.gridUpdatePending = true;
+
 			return false;
 		};
 
@@ -501,8 +515,10 @@ namespace GrassControl::DistantGrass
 					auto* cell = info->cell;
 					info->cell = nullptr;
 					info->Reset();
+
 					ClearCellAddGrassTask(cell);
 					remove.push_back(cell);
+
 					return true;
 				});
 			}
@@ -565,8 +581,10 @@ namespace GrassControl::DistantGrass
 		auto* exterior = new RE::EXTERIOR_DATA();
 		exterior->cellX = x;
 		exterior->cellY = y;
+
 		cell->GetRuntimeData().cellData.exterior = exterior;
 		cell->GetRuntimeData().worldSpace = world;
+
 		return cell;
 	}
 
@@ -609,6 +627,7 @@ namespace GrassControl::DistantGrass
 		}
 
 		RE::AddCellGrassTask::Queue(standIn);
+
 		return true;
 	}
 
@@ -669,6 +688,7 @@ namespace GrassControl::DistantGrass
 			delete cell->GetRuntimeData().cellData.exterior;
 			delete[] reinterpret_cast<std::byte*>(cell);
 		}
+
 		discarded.clear();
 	}
 
@@ -712,8 +732,10 @@ namespace GrassControl::DistantGrass
 		gridState.gridUpdatesEnabled = false;
 		gridState.gridUpdatePending = false;
 		gridState.streamingAllowed = false;
+
 		if (gridState.cellGrid)
 			gridState.cellGrid->QueueDistantCells(nullptr, 0, 0, 0, 0);
+
 		ResetGrassModelPrefetch();
 	}
 

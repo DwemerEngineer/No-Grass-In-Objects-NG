@@ -46,39 +46,32 @@ namespace GrassControl
 		return static_cast<float>(Next()) * 4.6566129e-10f - 1.0f;
 	}
 
-	GrassPatchCreation::CreatePatchCall::CreatePatchCall()
+	void GrassPatchCreation::Install()
 	{
-		// The engine holds the current shape in rbx rather than an argument register.
-		mov(r8, rbx);
-		mov(rax, reinterpret_cast<std::uintptr_t>(GrassPatchCreation::CreatePatch));
-		jmp(rax);
-		ready();
-	}
+		struct CreatePatchCall : Xbyak::CodeGenerator
+		{
+			CreatePatchCall()
+			{
+				// The engine holds the current shape in rbx rather than an argument register.
+				mov(r8, rbx);
+				mov(rax, reinterpret_cast<std::uintptr_t>(CreatePatch));
+				jmp(rax);
+				ready();
+			}
+		};
 
-	bool GrassPatchCreation::Install()
-	{
-		const bool updated = REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99;
-		const auto addGrass = RELOCATION_ID(15204, 15372).address();
-		const auto createPatch = addGrass + (updated ? 0x519 : 0x4FF);
-		const auto finishInstances = addGrass + (updated ? 0x5EC : REL::Relocate(0x5E0, 0x5DC, 0x5E0));
-
-		// VR's instanced shapes have one more virtual before DoneAddingInstances.
-		const bool finishMatches = REL::Module::IsVR() ? REL::make_pattern<"FF 90 D8 01 00 00">().match(finishInstances) : REL::make_pattern<"FF 90 D0 01 00 00">().match(finishInstances);
-		if (!REL::make_pattern<"E8">().match(createPatch) || !finishMatches || createPatch + 5 + *reinterpret_cast<const std::int32_t*>(createPatch + 1) != RELOCATION_ID(15212, 15381).address()) {
-			logger::warn("Grass placement call sites were modified by another plugin; ray casting, grass cliffs, extended grass count and grass scale are unavailable.");
-			return false;
-		}
+		extendedParameters = REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99;
+		const auto addCellGrass = RELOCATION_ID(15204, 15372).address();
+		const auto createPatchCall = addCellGrass + (extendedParameters ? 0x519 : 0x4FF);
+		const auto finishInstancesCall = addCellGrass + (extendedParameters ? 0x5EC : REL::Relocate(0x5E0, 0x5DC, 0x5E0));
 
 		auto& trampoline = SKSE::GetTrampoline();
-		CreatePatchCall patch;
-		trampoline.write_call<5>(createPatch, trampoline.allocate(patch));
-		trampoline.write_call<6>(finishInstances, GrassPatchCreation::FinishInstances);
+		CreatePatchCall createPatch;
+		trampoline.write_call<5>(createPatchCall, trampoline.allocate(createPatch));
+		trampoline.write_call<6>(finishInstancesCall, FinishInstances);
 
 		enabled = true;
-		anniversaryRuntime = REL::Module::IsAE();
-		extendedParameters = updated;
-		logger::info("Shared grass placement enabled{}.", Config::ThreadedGrassPlacement ? ", with placement workers dispatched during cell preparation" : "");
-		return true;
+		logger::info("Shared grass placement enabled{}.", Config::ThreadedGrassPlacement ? " with placement workers" : "");
 	}
 
 	RE::TESObjectCELL* GrassPatchCreation::GetCell()
@@ -103,13 +96,12 @@ namespace GrassControl
 			return;
 		}
 
-		// Grass read from a cache file is never placed here, so it does not wait for collision.
 		const auto* world = cell->GetRuntimeData().worldSpace;
 		const auto* coordinates = cell->GetCoordinates();
 		const bool fromCache = globals::AllowLoadGrass() && world && coordinates && DistantGrass::gridState.cacheIndex.Contains(world->editorID.c_str(), coordinates->cellX, coordinates->cellY);
 
 		GrassPatchCreation patchCreation(cell, abort);
-		if (!patchCreation.PrepareCell(!manager->generateGrassDataFiles && !fromCache)) {
+		if (!patchCreation.PrepareCell(NeedsCollision(manager, fromCache))) {
 			PhysicsRaycast::GetSingleton().DeferCell(cell);
 			DistantGrass::ClearCellAddGrassTask(cell);
 			return;
@@ -122,7 +114,9 @@ namespace GrassControl
 			RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
 			add(manager, cell, abort);
 			ReleaseNativePlacement();
-			if (!*abort)
+
+			// The engine has already written the cell's cache file, so cliff grass built while generating would be discarded.
+			if (!*abort && !Config::GeneratingCache)
 				patchCreation.AddCliffGrass(manager);
 		}
 	}
@@ -178,6 +172,7 @@ namespace GrassControl
 
 		nativeMutex.lock();
 		holdsNative = true;
+
 		return RE::CreateGrassPatch(manager, params);
 	}
 
@@ -190,9 +185,14 @@ namespace GrassControl
 		shape->DoneAddingInstances(instances);
 	}
 
+	bool GrassPatchCreation::NeedsCollision(const RE::BGSGrassManager* manager, bool fromCache)
+	{
+		return !manager->generateGrassDataFiles && (fromCache ? Config::GrassCliffs : !Config::OnlyLoadFromCache);
+	}
+
 	bool GrassPatchCreation::PrepareCell(bool requireCollision)
 	{
-		if (!enabled || !requireCollision || Config::OnlyLoadFromCache || !(Config::RayCast || Config::GrassCliffs) || cell->IsInteriorCell())
+		if (!enabled || !requireCollision || !(Config::RayCast || Config::GrassCliffs) || cell->IsInteriorCell())
 			return true;
 
 		return settings && (!settings->Valid || PhysicsRaycast::GetSingleton().CanFilterCell(*cell));
@@ -245,9 +245,11 @@ namespace GrassControl
 
 		patch.grass = *params.grassParam;
 		patch.start = *params.grassPatchStart;
+
 		std::transform(params.grassDensityPcts, params.grassDensityPcts + patch.density.size(), patch.density.begin(), [](float density) {
 			return std::isfinite(density) && density > 0.0f ? density : 0.0f;
 		});
+
 		patch.shape = shape;
 		patch.created = 0;
 		patch.needsWorldLookup = false;
@@ -263,6 +265,7 @@ namespace GrassControl
 		candidateCount += static_cast<std::size_t>(patch.sideCount) * patch.sideCount;
 		++patchCount;
 		publishedPatches.store(patchCount, std::memory_order_release);
+
 		if (!*abort && candidateCount >= DispatchCandidates && workerCount > 1)
 			Dispatch();
 
@@ -288,6 +291,7 @@ namespace GrassControl
 				activeCallbacks.fetch_sub(1, std::memory_order_relaxed);
 				throw;
 			}
+
 		} catch (const std::bad_alloc&) {
 			workerCount = 1;
 			logger::warn("Unable to schedule grass placement work; continuing on the engine worker.");
@@ -390,7 +394,7 @@ namespace GrassControl
 	std::uint32_t GrassPatchCreation::SlopeIndex(std::uint32_t degrees)
 	{
 		const float angle = static_cast<float>(std::min(degrees, 90u));
-		return static_cast<std::uint32_t>(anniversaryRuntime ? angle * 1.4222221374511719f : (angle * 0.017453292f) * 81.487328f) & 511u;
+		return static_cast<std::uint32_t>(REL::Module::IsAE() ? angle * 1.4222221374511719f : (angle * 0.017453292f) * 81.487328f) & 511u;
 	}
 
 	float GrassPatchCreation::Shade(const RE::NiColorA& color, Random& random, float colorRange) noexcept
@@ -604,6 +608,7 @@ namespace GrassControl
 		param.fitsToSlope = grass.GetFitToSlope();
 		param.hasUniformScaling = grass.GetUniformScaling();
 		std::ranges::fill(param.denstityPctPerQuadVertex, static_cast<float>(grass.GetDensity()) * 0.01f);
+
 		return param;
 	}
 
@@ -629,6 +634,7 @@ namespace GrassControl
 		handle->grassModelKey = modelKey;
 		handle->triShape.reset(shape);
 		data->grassHandles.push_back(handle);
+
 		return handle;
 	}
 
@@ -657,6 +663,7 @@ namespace GrassControl
 			if (result.status != PhysicsRaycast::QueryStatus::Success || result.hits.empty())
 				return false;
 		}
+
 		return true;
 	}
 
@@ -784,6 +791,7 @@ namespace GrassControl
 
 		if (patch.created)
 			Commit(patch);
+
 		shape->DoneAddingInstances(handle->instanceGroupIndicies);
 	}
 

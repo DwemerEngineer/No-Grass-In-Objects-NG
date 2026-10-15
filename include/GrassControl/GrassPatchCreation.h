@@ -13,8 +13,8 @@ namespace GrassControl
 		GrassPatchCreation(const GrassPatchCreation&) = delete;
 		GrassPatchCreation& operator=(const GrassPatchCreation&) = delete;
 
-		// Failure leaves native placement active without NGIO filtering.
-		static bool Install();
+		/** @brief Routes the engine's patch creation and instance completion through NGIO's placement. */
+		static void Install();
 		static RE::TESObjectCELL* GetCell();
 		static bool IsEnabled() { return enabled; }
 		// Reserve cores for frame processing during gameplay.
@@ -27,6 +27,9 @@ namespace GrassControl
 		static void AddCell(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, bool* abort, AddCellGrassFunc add);
 		static std::uint32_t CreatePatch(RE::BGSGrassManager* manager, RE::CreateGrassParams* params, RE::BSMultiStreamInstanceTriShape* shape);
 		static void FinishInstances(RE::BSMultiStreamInstanceTriShape* shape, RE::BSTArray<std::uint32_t>& instances);
+
+		/** @brief True when the cell's grass must wait for collision: placed grass is filtered, and cached grass still gets cliff grass on top. */
+		static bool NeedsCollision(const RE::BGSGrassManager* manager, bool fromCache);
 
 		bool PrepareCell(bool requireCollision = true);
 
@@ -42,12 +45,6 @@ namespace GrassControl
 		inline static constexpr int CellsPerOrigin = 12;
 		inline static constexpr float CellSize = 4096.0f;
 		inline static constexpr std::size_t GameplayParallelism = 6;
-
-		class CreatePatchCall final : public Xbyak::CodeGenerator
-		{
-		public:
-			CreatePatchCall();
-		};
 
 		// Skyrim 1.7.99 inserts the density multiplier before the water and slope parameters.
 		struct ExtendedGrassParams
@@ -198,7 +195,6 @@ namespace GrassControl
 
 		inline static std::optional<oneapi::tbb::global_control> parallelismControl;
 		inline static bool enabled = false;
-		inline static bool anniversaryRuntime = false;
 		inline static bool extendedParameters = false;
 		inline static thread_local GrassPatchCreation* current = nullptr;
 		// Engine placement writes grassManager->instanceData, which AddCellGrass reads back after the call returns.

@@ -80,9 +80,10 @@ namespace GrassControl
 					return;
 				}
 
+				const auto started = std::chrono::steady_clock::now();
 				GrassPatchCreation::AddCell(manager, cell, abort, func.get());
 				if (Config::GeneratingCache)
-					Generation::OnGrassCreated(*abort ? nullptr : cell);
+					Generation::OnGrassCreated(*abort ? nullptr : cell, std::chrono::steady_clock::now() - started);
 			}
 
 			inline static REL::Relocation<decltype(thunk)> func;
@@ -114,6 +115,10 @@ namespace GrassControl
 				if (REL::Module::IsVR())
 					OverrideSetting("bLoadVRPlayroom:VR", false);
 
+				// Large references load 3D across the whole large-ref grid on every move, but grass is only cached for the loaded grid.
+				// The engine enables them only while uLargeRefLODGridSize exceeds uGridsToLoad.
+				OverrideSetting("uLargeRefLODGridSize:General", globals::GridsToLoad());
+
 				Generation::ApplyPatches();
 
 				Config::OnlyLoadFromCache = false;
@@ -129,7 +134,7 @@ namespace GrassControl
 				Config::ExtendGrassDistance = Config::DynDOLODGrassMode == 2;
 			}
 
-			const bool placementInstalled = GrassPatchCreation::Install();
+			GrassPatchCreation::Install();
 
 			// Patched while the game is still single-threaded; the engine's write lock is in constant use once it runs.
 			if (Config::RayCast || Config::GrassCliffs)
@@ -139,11 +144,11 @@ namespace GrassControl
 				const auto addr = RELOCATION_ID(15202, 15370).address() + REL::Relocate(0xAE5 - 0x890, 0x258);
 				const int mode = std::clamp(Config::SuperDenseMode, 0, 12);
 				if (mode != 7)
-					Memory::Internal::write<std::uint8_t>(addr + 2, static_cast<std::uint8_t>(mode), true);
+					REL::safe_write(addr + 2, static_cast<std::uint8_t>(mode));
 			}
 
 			// Shared placement starts a new instance buffer when a shape fills; engine placement would overrun it.
-			if (Config::ExtendGrassCount && placementInstalled)
+			if (Config::ExtendGrassCount)
 				REL::safe_write(RELOCATION_ID(15220, 15385).address() + REL::Relocate(0x433 - 0x3C0, 0x68), REL::NOP6, 6);
 
 			if (Config::UseGrassCache)
@@ -154,7 +159,7 @@ namespace GrassControl
 
 			if (Config::EnsureMaxGrassTypesPerTextureSetting > 0) {
 				const auto addr = RELOCATION_ID(18342, 18758).address() + REL::Relocate(0xD63 - 0xCF0, 0x68);
-				const std::uint32_t max = std::max(Config::EnsureMaxGrassTypesPerTextureSetting, Memory::Internal::read<int>(RELOCATION_ID(501615, 360443).address() + 8));
+				const std::uint32_t max = std::max(Config::EnsureMaxGrassTypesPerTextureSetting, globals::settings::maxGrassTypesPerTexture ? globals::settings::maxGrassTypesPerTexture->GetInteger() : 0);
 
 				struct MaxGrassTypesPatch : CodeGenerator
 				{
@@ -281,9 +286,8 @@ namespace GrassControl
 		{
 			auto& trampoline = SKSE::GetTrampoline();
 
-			Memory::Internal::write<std::uint8_t>(RELOCATION_ID(38141, 39098).address(), 0xC3, true);
-			if (const auto addr = RELOCATION_ID(13240, 13391).address() + (0x55E - 0x480); REL::make_pattern<"E8">().match(addr))
-				REL::safe_write(addr, REL::NOP5, 5);
+			REL::safe_write(RELOCATION_ID(38141, 39098).address(), REL::RET);
+			REL::safe_write(RELOCATION_ID(13240, 13391).address() + (0x55E - 0x480), REL::NOP5, 5);
 
 			OverrideSetting("iGrassCellRadius:Grass", GetGrassGridRadius());
 
@@ -555,8 +559,8 @@ namespace GrassControl
 			}
 
 			// Bypass the grass-distance clamp derived from uGridsToLoad.
-			Memory::Internal::write<std::uint8_t>(RELOCATION_ID(15202, 15370).address() + REL::Relocate(0xB06 - 0x890, 0x279) + 2, 16, true);
-			Memory::Internal::write<std::uint8_t>(RELOCATION_ID(528751, 15379).address() + REL::Relocate(0xFE - 0xE0, 0x1E) + 2, 16, true);
+			REL::safe_write(RELOCATION_ID(15202, 15370).address() + REL::Relocate(0xB06 - 0x890, 0x279) + 2, std::uint8_t{ 16 });
+			REL::safe_write(RELOCATION_ID(528751, 15379).address() + REL::Relocate(0xFE - 0xE0, 0x1E) + 2, std::uint8_t{ 16 });
 
 			stl::write_thunk_call<CellSelection>(RELOCATION_ID(15206, 15374).address() + (0x645C - 0x6200));
 			stl::write_thunk_call<CellSelection>(RELOCATION_ID(15205, 15373).address() + (UpdatedRuntime() ? 0x590 : REL::Relocate(0x62B, 0x597)));
@@ -711,8 +715,7 @@ namespace GrassControl
 		void ApplyPatches()
 		{
 			const auto createOffset = UpdatedRuntime() ? 0x9D9 : REL::Relocate(0x2B25 - 0x2220, 0xB29);
-			if (const auto addr = RELOCATION_ID(13148, 13288).address() + createOffset; REL::make_pattern<"E8">().match(addr))
-				REL::safe_write(addr, REL::NOP5, 5);
+			REL::safe_write(RELOCATION_ID(13148, 13288).address() + createOffset, REL::NOP5, 5);
 
 			const auto addr = RELOCATION_ID(13190, 13335).address() + 0x106;
 
@@ -752,7 +755,7 @@ namespace GrassControl
 			Generation::Enable();
 
 			// Cache generation must continue while the game is unfocused.
-			Memory::Internal::write<std::uint8_t>(RELOCATION_ID(35565, 36564).address() + REL::Relocate(0x216 - 0x1E0, 0x51, 0x4b), 0xEB, true);
+			REL::safe_write(RELOCATION_ID(35565, 36564).address() + REL::Relocate(0x216 - 0x1E0, 0x51, 0x4b), REL::JMP8);
 		}
 	}
 }

@@ -50,6 +50,8 @@ namespace GrassControl::Generation
 			Prepare();
 		}
 
+		LogStepTime();
+
 		if (worlds.empty()) {
 			Finish();
 			return false;
@@ -71,6 +73,11 @@ namespace GrassControl::Generation
 				for (int cellY = y - uHalf; cellY <= y + uHalf; ++cellY)
 					Clear(cellX, cellY);
 			}
+
+			stepCell = { x, y };
+			stepStarted = std::chrono::steady_clock::now();
+			stepBuildMicroseconds = 0;
+			stepBuiltCells = 0;
 			return true;
 		}
 
@@ -81,6 +88,16 @@ namespace GrassControl::Generation
 		OnGrassDispatch();
 
 		return true;
+	}
+
+	void CacheGenerator::LogStepTime()
+	{
+		if (!stepCell)
+			return;
+
+		const auto total = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - stepStarted).count();
+		logger::info("Grid at ({}, {}) took {} ms; {} cells spent {} ms building grass", stepCell->first, stepCell->second, total, stepBuiltCells.load(), stepBuildMicroseconds.load() / 1000);
+		stepCell.reset();
 	}
 
 	void CacheGenerator::MarkCell(std::string_view world, int x, int y)
@@ -232,6 +249,7 @@ namespace GrassControl::Generation
 		const auto failFile = Util::Files::GamePath(fmt::format("Data/Grass/{}x{:04}y{:04}.fail", name, x, y));
 		int fails = 1;
 		bool skip = false;
+
 		const auto countFailure = [&](std::string& contents) {
 			const auto text = Util::TrimView(contents);
 			const auto [end, result] = std::from_chars(text.data(), text.data() + text.size(), fails);
@@ -251,11 +269,13 @@ namespace GrassControl::Generation
 		// The fail count is written before moving, so a cell that crashes the game is skipped after enough attempts.
 		std::error_code error;
 		bool saved = Util::Files::UpdateText(failFile, countFailure, error);
+
 		if (!saved && Util::Files::IsMissing(error)) {
 			saved = Util::Files::CreateText(failFile, "1\n", error);
 			if (!saved && error == std::errc::file_exists)
 				saved = Util::Files::UpdateText(failFile, countFailure, error);
 		}
+
 		if (!saved)
 			stl::report_and_fail(fmt::format("Cannot record grass generation failures for {}: {}", Util::Files::PathForLog(failFile), error.message()));
 
@@ -329,6 +349,7 @@ namespace GrassControl::Generation
 		generator = std::make_unique<CacheGenerator>();
 		lastActivity = GetTickCount64();
 		runState = RunState::Running;
+
 		if (Config::FreezeCheck)
 			std::thread(RunFreezeCheck).detach();
 	}
@@ -356,10 +377,13 @@ namespace GrassControl::Generation
 		awaitingDispatch = false;
 	}
 
-	void OnGrassCreated(RE::TESObjectCELL* cell)
+	void OnGrassCreated(RE::TESObjectCELL* cell, std::chrono::steady_clock::duration buildTime)
 	{
 		if (!patchesApplied)
 			return;
+
+		stepBuildMicroseconds += std::chrono::duration_cast<std::chrono::microseconds>(buildTime).count();
+		++stepBuiltCells;
 
 		// Start publishes the generator before the running state.
 		if (runState == RunState::Running && cell) {
