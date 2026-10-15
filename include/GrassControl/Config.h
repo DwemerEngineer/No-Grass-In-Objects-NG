@@ -36,6 +36,7 @@ namespace GrassControl::Config
 	inline double OverwriteGrassDistance = -1;
 	inline double OverwriteGrassFadeRange = -1;
 	inline int OverwriteMinGrassSize = -1;
+	inline double OverwriteGrassFadeInTime = 0.0;
 	inline double GlobalGrassScale = 1.0;
 	inline bool OnlyLoadFromCache = false;
 	inline std::string SkipPregenerateWorldSpaces = "DLC2ApocryphaWorld;DLC01Boneyard;WindhelmPitWorldspace";
@@ -46,6 +47,10 @@ namespace GrassControl::Config
 	inline int FreezeTime = 90000;
 	inline bool Updating = false;
 	inline bool loadFromBSA = false;
+	inline bool ThreadedGrassPlacement = false;
+
+	// Derived from the PrecacheGrass marker beside the game executable.
+	inline bool GeneratingCache = false;
 
 	inline constexpr std::string_view iniPath = "Data/SKSE/Plugins/GrassControl.ini";
 }
