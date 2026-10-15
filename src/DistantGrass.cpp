@@ -324,8 +324,10 @@ namespace GrassControl::DistantGrass
 				info->cell = nullptr;
 				gridState.cellGrid->map.erase(cell);
 				gridState.cellGrid->RetryDistantCell(info->x, info->y);
-				ClearCellAddGrassTask(cell);
 			}
+
+			// A queued task may belong to a cell NGIO never tracked, and must not run once the cell is gone.
+			ClearCellAddGrassTask(cell);
 		}
 
 		RE::BSSpinLockGuard grassLock(cell->grassCreateLock);

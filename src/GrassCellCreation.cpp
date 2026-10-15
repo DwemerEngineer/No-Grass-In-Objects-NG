@@ -60,6 +60,10 @@ namespace GrassControl::DistantGrass
 	static void UpdateCellGrass(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, bool* abort)
 	{
 		std::unique_lock lock(gridState.cellMapMutex);
+		// RemoveCellGrass aborts under this lock before the cell is destroyed.
+		if (*abort)
+			return;
+
 		const auto info = gridState.cellGrid ? gridState.cellGrid->FindByCell(cell) : nullptr;
 		if (!info) {
 			ClearCellAddGrassTask(cell);
@@ -644,10 +648,15 @@ namespace GrassControl::DistantGrass
 		if (!cell)
 			return;
 
+		// Stand-in cells are NGIO's own, and an aborted load still has to discard them.
 		if (gridState.cacheOnlyCells) {
 			gridState.cacheOnlyCells->Load(cell);
 			return;
 		}
+
+		// An aborted task can outlive its cell, so the cell must not be read.
+		if (abort && *abort)
+			return;
 
 		if (abort && UseGrassWorkers(manager, cell) && GrassWorkers::Get().Submit(manager, cell, abort))
 			return;

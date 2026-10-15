@@ -591,8 +591,8 @@ namespace GrassControl
 				header = std::bit_cast<decltype(header)>(words);
 			}
 
-			if (const auto error = RE::WriteStream(a_stream + 0x8, std::addressof(header), static_cast<std::uint32_t>(sizeof(header))); error != 0)
-				return error;
+			if (const auto written = RE::WriteStream(a_stream + 0x8, std::addressof(header), static_cast<std::uint32_t>(sizeof(header))); written != sizeof(header))
+				return written;
 
 			return RE::WriteStream(a_stream + 0x8, group->vertexBuffer->m_data, static_cast<std::uint32_t>(group->vertexBuffer->byteWidth));
 		}
