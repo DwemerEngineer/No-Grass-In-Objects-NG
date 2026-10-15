@@ -2,6 +2,7 @@
 
 namespace RE
 {
+	// Completes CommonLib's forward declaration, so ExtraCellGrassData::addGrassTask holds this type.
 	class AddCellGrassTask final : public QueuedFile
 	{
 	public:
@@ -26,25 +27,16 @@ namespace RE
 
 		static std::size_t RuntimeDataOffset() { return REL::Relocate<std::size_t>(0x38, 0x38, 0x40); }
 
-		// Returns an unqueued task with one reference owned by the caller.
-		static AddCellGrassTask* Create(TESObjectCELL* cell);
+		/** @brief Creates an unqueued task for the cell. */
+		static NiPointer<AddCellGrassTask> Create(TESObjectCELL* cell);
 
 		static AddCellGrassTask* FromAbort(bool* abort);
 
-		// Adds a reference for the caller when a task exists.
-		static AddCellGrassTask* Get(const ExtraDataList& extraList)
-		{
-			static REL::Relocation<void (*)(const ExtraDataList&, AddCellGrassTask**)> func{ RELOCATION_ID(11933, 12072) };
-			AddCellGrassTask* task = nullptr;
-			func(extraList, &task);
-			return task;
-		}
+		/** @brief The task stored in the cell's grass data, or null. */
+		static NiPointer<AddCellGrassTask> Get(TESObjectCELL* cell);
 
-		static void Set(const ExtraDataList& extraList, AddCellGrassTask* task)
-		{
-			static REL::Relocation<void (*)(const ExtraDataList&, AddCellGrassTask*)> func{ RELOCATION_ID(11932, 12071) };
-			func(extraList, task);
-		}
+		/** @brief Stores the task in the cell's grass data; null clears it. */
+		static void Set(TESObjectCELL* cell, AddCellGrassTask* task);
 
 		static void Queue(TESObjectCELL* cell)
 		{
@@ -54,8 +46,8 @@ namespace RE
 
 		bool* Abort() { return &GetRuntimeData().abort; }
 
-		void AddReference() { InterlockedIncrement(reinterpret_cast<volatile long*>(&refCount)); }
-
-		void Release();
+		// The reference count NiPointer uses; the last release runs the engine's deleting destructor.
+		void IncRefCount() { InterlockedIncrement(reinterpret_cast<volatile long*>(&refCount)); }
+		void DecRefCount();
 	};
 }

@@ -160,7 +160,7 @@ namespace GrassControl::Plugin
 
 			auto settings = RE::GameSettingCollection::GetSingleton();
 
-			RE::ShowMessageBox("Do you want NGIO to display a warning when repeated physics queries fail in a cell? Failed queries use fallback placement, so grass may remain within objects. You can change this preference using Ray-cast-error-message in GrassControl.ini.", callback, settings->GetSetting("sYes")->GetString(), settings->GetSetting("sNo")->GetString());
+			RE::MessageBoxMenu::Create("Do you want NGIO to display a warning when repeated physics queries fail in a cell? Failed queries use fallback placement, so grass may remain within objects. You can change this preference using Ray-cast-error-message in GrassControl.ini.", callback, 0, 0x19, 10, settings->GetSetting("sYes")->GetString(), settings->GetSetting("sNo")->GetString());
 		}
 	}
 }

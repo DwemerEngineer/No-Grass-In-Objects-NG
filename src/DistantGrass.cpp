@@ -242,18 +242,17 @@ namespace GrassControl::DistantGrass
 			QueueGrassCreation(cell);
 	}
 
-	bool ClearCellAddGrassTask(const RE::TESObjectCELL* cell)
+	bool ClearCellAddGrassTask(RE::TESObjectCELL* cell)
 	{
 		if (!cell)
 			return false;
 
-		auto* task = RE::AddCellGrassTask::Get(cell->extraList);
+		const auto task = RE::AddCellGrassTask::Get(cell);
 		if (!task)
 			return false;
 
 		*task->Abort() = true;
-		task->Release();
-		RE::AddCellGrassTask::Set(cell->extraList, nullptr);
+		RE::AddCellGrassTask::Set(cell, nullptr);
 		return true;
 	}
 
@@ -677,7 +676,7 @@ namespace GrassControl::DistantGrass
 			return;
 
 		RE::ClearGrassHandles(&cell->extraList);
-		RE::AddCellGrassTask::Set(cell->extraList, nullptr);
+		RE::AddCellGrassTask::Set(cell, nullptr);
 		discarded.push_back(cell);
 	}
 

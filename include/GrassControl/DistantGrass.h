@@ -180,7 +180,7 @@ namespace GrassControl::DistantGrass
 
 	int GetGrassGridRadius();
 
-	bool ClearCellAddGrassTask(const RE::TESObjectCELL* cell);
+	bool ClearCellAddGrassTask(RE::TESObjectCELL* cell);
 
 	void RemoveCellGrass(RE::TESObjectCELL* cell);
 

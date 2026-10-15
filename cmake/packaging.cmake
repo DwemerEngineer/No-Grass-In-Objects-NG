@@ -16,8 +16,7 @@ if(BUILD_ZIP)
 		COMMAND ${CMAKE_COMMAND} -E make_directory "${stage_dir}/SKSE/Plugins"
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${PROJECT_NAME}> "${stage_dir}/SKSE/Plugins/"
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_PDB_FILE:${PROJECT_NAME}> "${stage_dir}/SKSE/Plugins/"
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" "${stage_dir}/LICENSE"
 		COMMAND ${CMAKE_COMMAND} -E chdir "${stage_dir}" ${CMAKE_COMMAND} -E tar cf
-			"${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}_${PROJECT_VERSION}_$<CONFIG>.7z" --format=7zip -- SKSE LICENSE
+			"${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}_${PROJECT_VERSION}_$<CONFIG>.7z" --format=7zip -- SKSE
 		VERBATIM)
 endif()

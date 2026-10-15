@@ -2,15 +2,15 @@
 
 namespace RE
 {
-	AddCellGrassTask* AddCellGrassTask::Create(TESObjectCELL* cell)
+	NiPointer<AddCellGrassTask> AddCellGrassTask::Create(TESObjectCELL* cell)
 	{
 		const auto* coordinates = cell->GetCoordinates();
 		if (!coordinates)
-			return nullptr;
+			return {};
 
 		auto* task = static_cast<AddCellGrassTask*>(malloc(RuntimeDataOffset() + sizeof(RUNTIME_DATA)));
 		if (!task)
-			return nullptr;
+			return {};
 
 		constexpr std::uint8_t GrassTaskPriority = 4;
 		static REL::Relocation<void* (*)(void*, std::uint8_t, void*)> queuedFileConstructor{ RELOCATION_ID(73994, 75733) };
@@ -18,8 +18,7 @@ namespace RE
 		stl::emplace_vtable(task);
 
 		task->GetRuntimeData() = { cell, coordinates->cellX, coordinates->cellY, false };
-		task->AddReference();
-		return task;
+		return NiPointer(task);
 	}
 
 	AddCellGrassTask* AddCellGrassTask::FromAbort(bool* abort)
@@ -27,9 +26,28 @@ namespace RE
 		return reinterpret_cast<AddCellGrassTask*>(reinterpret_cast<std::byte*>(abort) - RuntimeDataOffset() - offsetof(RUNTIME_DATA, abort));
 	}
 
-	void AddCellGrassTask::Release()
+	NiPointer<AddCellGrassTask> AddCellGrassTask::Get(TESObjectCELL* cell)
 	{
-		// The engine's deleting destructor returns the task to its allocator.
+		const auto* data = cell->extraList.GetByType<ExtraCellGrassData>();
+		return data ? data->addGrassTask : NiPointer<AddCellGrassTask>();
+	}
+
+	void AddCellGrassTask::Set(TESObjectCELL* cell, AddCellGrassTask* task)
+	{
+		auto* data = cell->extraList.GetByType<ExtraCellGrassData>();
+		if (!data) {
+			if (!task)
+				return;
+
+			data = BSExtraData::Create<ExtraCellGrassData>();
+			cell->extraList.Add(data);
+		}
+
+		data->addGrassTask.reset(task);
+	}
+
+	void AddCellGrassTask::DecRefCount()
+	{
 		if (InterlockedDecrement(reinterpret_cast<volatile long*>(&refCount)) == 0)
 			delete static_cast<BSTask*>(this);
 	}

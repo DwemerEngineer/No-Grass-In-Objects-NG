@@ -659,10 +659,7 @@ namespace GrassControl
 			bool queued = false;
 			{
 				RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
-				if (auto* task = RE::AddCellGrassTask::Get(cell->extraList)) {
-					task->Release();
-					queued = true;
-				}
+				queued = static_cast<bool>(RE::AddCellGrassTask::Get(cell));
 			}
 
 			if (queued || !DistantGrass::QueueGrassPlacement(cell))

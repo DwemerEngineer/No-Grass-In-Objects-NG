@@ -153,7 +153,7 @@ namespace GrassControl::DistantGrass
 
 	static void ReleaseTask(bool* abort)
 	{
-		RE::AddCellGrassTask::FromAbort(abort)->Release();
+		RE::AddCellGrassTask::FromAbort(abort)->DecRefCount();
 	}
 
 	// A shape's begin/add/done sequence uses thread-local staging storage and cannot overlap another build.
@@ -228,7 +228,7 @@ namespace GrassControl::DistantGrass
 
 		bool runInline;
 		bool submitted = false;
-		RE::AddCellGrassTask::FromAbort(abort)->AddReference();
+		RE::AddCellGrassTask::FromAbort(abort)->IncRefCount();
 
 		const stl::scope_exit releaseUnsubmitted([&] {
 			if (!submitted)
@@ -456,7 +456,7 @@ namespace GrassControl::DistantGrass
 
 			RE::NiPointer<RE::NiNode> node;
 			if (auto* manager = RE::BGSGrassManager::GetSingleton()) {
-				RE::BSWriteLockGuard grassLock(manager->lock);
+				RE::BSWriteLockGuard grassLock(manager->grassTypeLock);
 				RE::BSModelDB::DBTraits::ArgsType args;
 
 				if (RE::BSModelDB::Demand(model.c_str(), node, args) != RE::BSResource::ErrorCode::kNone)
@@ -625,22 +625,18 @@ namespace GrassControl::DistantGrass
 		GrassModelPrefetch::Get().Request(cell);
 
 		// Retain a native task for cancellation while bypassing the IOManager queue.
-		if (auto* existing = RE::AddCellGrassTask::Get(cell->extraList)) {
-			existing->Release();
+		if (RE::AddCellGrassTask::Get(cell))
 			return;
-		}
 
-		auto* task = RE::AddCellGrassTask::Create(cell);
+		const auto task = RE::AddCellGrassTask::Create(cell);
 		if (!task)
 			return;
 
-		RE::AddCellGrassTask::Set(cell->extraList, task);
+		RE::AddCellGrassTask::Set(cell, task.get());
 		if (!GrassWorkers::Get().Submit(manager, cell, task->Abort())) {
-			RE::AddCellGrassTask::Set(cell->extraList, nullptr);
+			RE::AddCellGrassTask::Set(cell, nullptr);
 			RE::AddCellGrassTask::Queue(cell);
 		}
-
-		task->Release();
 	}
 
 	void OnGrassCreated(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, bool* abort)

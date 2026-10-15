@@ -123,12 +123,6 @@ namespace RE
 		return func(stream, data, size);
 	}
 
-	inline void ShowMessageBox(const char* text, void (*callback)(std::uint8_t), const char* yes, const char* no)
-	{
-		static REL::Relocation<void (*)(const char*, void (*)(std::uint8_t), std::uint32_t, std::uint32_t, std::uint32_t, const char*, const char*, const char*)> func{ RELOCATION_ID(51420, 52269) };
-		func(text, callback, 0, 0x19, 10, yes, no, nullptr);
-	}
-
 	inline void CastRay(const hkpWorld* world, const hkpWorldRayCastInput& input, hkpRayHitCollector& collector)
 	{
 		static REL::Relocation<void (*)(const hkpWorld*, const hkpWorldRayCastInput&, hkpRayHitCollector&)> func{ RELOCATION_ID(60552, 61400) };
