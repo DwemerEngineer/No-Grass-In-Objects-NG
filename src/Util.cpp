@@ -90,32 +90,6 @@ namespace GrassControl::Util
 			}
 		};
 
-		std::filesystem::path GamePath(const std::filesystem::path& relative)
-		{
-			static const auto root = [] {
-				std::wstring executable(260, L'\0');
-
-				while (true) {
-					const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
-					if (length == 0) {
-						throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "Cannot locate the game executable");
-					}
-
-					if (length < executable.size()) {
-						executable.resize(length);
-						return std::filesystem::path(executable).parent_path();
-					}
-
-					if (executable.size() >= 32768) {
-						throw std::system_error(std::make_error_code(std::errc::filename_too_long), "Game executable path is too long");
-					}
-
-					executable.resize(std::min<std::size_t>(executable.size() * 2, 32768));
-				}
-			}();
-			return (root / relative).lexically_normal().make_preferred();
-		}
-
 		std::string PathForLog(const std::filesystem::path& path)
 		{
 			const auto utf8 = path.u8string();
@@ -234,29 +208,6 @@ namespace GrassControl::Util
 		TerminateProcess(GetCurrentProcess(), 1);
 	}
 
-	std::filesystem::path GetProgressFilePath()
-	{
-		static const auto path = [] {
-			const auto normal = Files::GamePath(L"PrecacheGrass.txt");
-			const auto doubled = Files::GamePath(L"PrecacheGrass.txt.txt");
-			std::error_code error;
-			if (std::filesystem::is_regular_file(normal, error)) {
-				return normal;
-			}
-
-			if ((!error || Files::IsMissing(error)) && std::filesystem::is_regular_file(doubled, error)) {
-				return doubled;
-			}
-
-			if (error && !Files::IsMissing(error)) {
-				logger::error("Failed to locate the progress file: {}", error.message());
-			}
-
-			return normal;
-		}();
-		return path;
-	}
-
 	std::unique_ptr<CachedFormList> CachedFormList::TryParse(const std::string& input, const std::string& settingNameForLog)
 	{
 		auto list = std::make_unique<CachedFormList>();
@@ -302,9 +253,6 @@ namespace GrassControl::Util
 
 		logger::info("Forms {} were successfully added to {}", fmt::join(ids, ", "), settingNameForLog);
 	}
-
-	static constexpr std::size_t MaxSceneObjects = 4096;
-	static constexpr std::size_t MaxSceneVertices = 262144;
 
 	static bool CollectSceneObjects(RE::NiAVObject* object, std::set<RE::NiAVObject*>& objects)
 	{

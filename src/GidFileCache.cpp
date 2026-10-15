@@ -302,21 +302,6 @@ namespace GrassControl::Generation
 			stl::report_and_fail("Unable to save grass generation progress.");
 	}
 
-	enum class RunState
-	{
-		Idle,
-		Running,
-		Complete
-	};
-
-	static std::unique_ptr<CacheGenerator> generator;
-	static std::atomic<RunState> runState{ RunState::Idle };
-	static std::atomic<std::int64_t> queuedGrass{ 0 };
-	// Set when a step moved the player; cleared once the engine has dispatched that grid's grass.
-	static std::atomic<bool> awaitingDispatch{ false };
-	static std::atomic<std::uint64_t> lastActivity{ 0 };
-	static std::atomic<bool> patchesApplied{ false };
-
 	static void RunFreezeCheck()
 	{
 		while (runState == RunState::Running) {

@@ -8,5 +8,10 @@ namespace GrassControl::Events
 		RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent*, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override;
 	};
 
-	void Register();
+	inline void Register()
+	{
+		static MenuOpenCloseEventHandler menuEvents;
+
+		RE::UI::GetSingleton()->AddEventSink(&menuEvents);
+	}
 }

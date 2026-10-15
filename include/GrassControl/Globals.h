@@ -20,6 +20,12 @@ namespace GrassControl::globals
 		return RE::INIPrefSettingCollection::GetSingleton()->GetSetting(name);
 	}
 
+	inline const RE::Setting* WaveOffsetRange()
+	{
+		static const auto* setting = FindSetting("fWaveOffsetRange:Grass");
+		return setting;
+	}
+
 	// Initialize before installing hooks that read these settings.
 	inline void OnInit()
 	{

@@ -15,8 +15,6 @@ namespace GrassControl
 {
 	using namespace Xbyak;
 
-	static bool cacheHelperInstalled = false;
-
 	static bool UpdatedRuntime()
 	{
 		return REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99;
@@ -701,7 +699,7 @@ namespace GrassControl
 			if (!Config::UseGrassCache)
 				return;
 
-			if (!cacheHelperInstalled)
+			if (!GidFileCache::cacheHelperInstalled)
 				stl::write_thunk_call<PathFileNameLoad>(RELOCATION_ID(15206, 15374).address() + 0xD4);
 
 			stl::write_thunk_call<PathFileNameSave>(RELOCATION_ID(15204, 15372).address() + (UpdatedRuntime() ? 0x666 : REL::Relocate(0x65A, 0x656)));

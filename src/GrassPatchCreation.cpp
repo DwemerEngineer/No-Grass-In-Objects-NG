@@ -296,13 +296,12 @@ namespace GrassControl
 
 	void GrassPatchCreation::LimitParallelism(bool limit)
 	{
-		static std::optional<oneapi::tbb::global_control> control;
-		if (limit == control.has_value())
+		if (limit == parallelismControl.has_value())
 			return;
 		if (limit)
-			control.emplace(oneapi::tbb::global_control::max_allowed_parallelism, GameplayParallelism);
+			parallelismControl.emplace(oneapi::tbb::global_control::max_allowed_parallelism, GameplayParallelism);
 		else
-			control.reset();
+			parallelismControl.reset();
 	}
 
 	GrassPatchCreation::Work::Work(unsigned int concurrency) :
@@ -591,7 +590,7 @@ namespace GrassControl
 
 	static RE::GrassParam MakeGrassParam(RE::TESGrass& grass)
 	{
-		static const auto* waveOffsetRange = globals::FindSetting("fWaveOffsetRange:Grass");
+		const auto* waveOffsetRange = globals::WaveOffsetRange();
 
 		RE::GrassParam param{};
 		param.modelName = grass.GetModel();

@@ -6,11 +6,6 @@
 
 namespace GrassControl::Profiler
 {
-	static constexpr std::size_t MaxSamples = 1000;
-
-	static std::mutex mutex;
-	static std::deque<double> samples;
-
 	void Record(std::chrono::steady_clock::duration time)
 	{
 		if (!Config::ProfilerReport)

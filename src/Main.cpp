@@ -15,9 +15,6 @@ namespace GrassControl::Plugin
 	using namespace SKSE::log;
 	using namespace SKSE::stl;
 
-	static std::atomic<std::shared_ptr<const RaycastHelper>> raycastSettings;
-	static int mainMenuUpdates = 0;
-
 	static void InitializeHooking()
 	{
 		log::trace("Initializing trampoline...");

@@ -42,7 +42,12 @@ namespace GrassControl
 			std::string root;
 		};
 
-		static PhysicsRaycast& GetSingleton();
+		static PhysicsRaycast& GetSingleton()
+		{
+			static PhysicsRaycast instance;
+			return instance;
+		}
+
 		// Exposes waiting writers so grass readers can yield before taking the world lock.
 		static void InstallWriterSignal();
 
@@ -136,6 +141,12 @@ namespace GrassControl
 
 			bool started = false;
 		};
+
+		static ThreadMemory& GetThreadMemory()
+		{
+			static thread_local ThreadMemory memory;
+			return memory;
+		}
 
 		// Share snapshots across placement threads to avoid repeated model walks under the renderer lock.
 		struct ShapeCache

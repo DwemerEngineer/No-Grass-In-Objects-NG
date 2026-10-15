@@ -4,6 +4,8 @@
 
 namespace GrassControl::GidFileCache
 {
+	inline bool cacheHelperInstalled = false;
+
 	void SetHelperInstalled(bool installed);
 
 	// Use NGIO's .cgid extension and PC instance layout.
@@ -60,6 +62,21 @@ namespace GrassControl::Generation
 		int uGrids = 5;
 		int uHalf = 2;
 	};
+
+	enum class RunState
+	{
+		Idle,
+		Running,
+		Complete
+	};
+
+	inline std::unique_ptr<CacheGenerator> generator;
+	inline std::atomic<RunState> runState{ RunState::Idle };
+	inline std::atomic<std::int64_t> queuedGrass{ 0 };
+	// Set when a step moved the player; cleared once the engine has dispatched that grid's grass.
+	inline std::atomic<bool> awaitingDispatch{ false };
+	inline std::atomic<std::uint64_t> lastActivity{ 0 };
+	inline std::atomic<bool> patchesApplied{ false };
 
 	void InstallHooks();
 

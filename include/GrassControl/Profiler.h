@@ -3,6 +3,11 @@
 // Cell timings are recorded only when Profiler-report is enabled.
 namespace GrassControl::Profiler
 {
+	inline constexpr std::size_t MaxSamples = 1000;
+
+	inline std::mutex mutex;
+	inline std::deque<double> samples;
+
 	void Record(std::chrono::steady_clock::duration time);
 
 	void Report();

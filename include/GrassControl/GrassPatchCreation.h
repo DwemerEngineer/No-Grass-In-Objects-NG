@@ -196,6 +196,7 @@ namespace GrassControl
 		static float Shade(const RE::NiColorA& color, Random& random, float colorRange) noexcept;
 		bool AcceptWater(const RE::CreateGrassParams& params, float height) const;
 
+		inline static std::optional<oneapi::tbb::global_control> parallelismControl;
 		inline static bool enabled = false;
 		inline static bool anniversaryRuntime = false;
 		inline static bool extendedParameters = false;

@@ -31,10 +31,4 @@ namespace GrassControl::Events
 		return RE::BSEventNotifyControl::kContinue;
 	}
 
-	void Register()
-	{
-		static MenuOpenCloseEventHandler menuEvents;
-
-		RE::UI::GetSingleton()->AddEventSink(&menuEvents);
-	}
 }

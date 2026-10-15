@@ -29,6 +29,7 @@ namespace GrassControl::DistantGrass
 			std::int64_t block;
 			int x;
 			int y;
+			bool reserved = true;  // False when the block could not be reserved; the job is only deferred.
 		};
 
 		std::int64_t GrassBlockOf(const RE::TESObjectCELL* cell) const;
@@ -40,6 +41,11 @@ namespace GrassControl::DistantGrass
 		std::optional<Job> Take();
 
 		bool Dispatch();
+
+		// Takes the next job, or ends the calling callback when none can run.
+		std::optional<Job> Next();
+		void Run(const Job& job);
+		void DeferUnbuilt(const Job& job);
 		void Work();
 
 		std::mutex mutex;
@@ -108,6 +114,33 @@ namespace GrassControl::DistantGrass
 		inline static REL::Relocation<decltype(&DetachChildOut)> detachChildOut;
 		inline static REL::Relocation<decltype(&DetachChild)> detachChild;
 	};
+
+	struct RetiredGrass
+	{
+		std::vector<RE::CellGrassData*> entries;
+		std::chrono::steady_clock::time_point deadline;
+	};
+
+	inline constexpr auto RetiredGrassTimeout = std::chrono::seconds(3);
+
+	struct CreationState
+	{
+		// The workers must stop before the raycast state they access is destroyed.
+		CreationState();
+
+		std::mutex retiredMutex;
+		std::unordered_map<RE::TESObjectCELL*, RetiredGrass> retiredGrass;
+		std::atomic<std::uint64_t> swaps{ 0 };
+		// Destruction stops prefetch first, then workers, before the retired state they use is released.
+		GrassWorkers workers;
+		GrassModelPrefetch modelPrefetch;
+	};
+
+	inline CreationState& State()
+	{
+		static CreationState state;
+		return state;
+	}
 
 	void OnGrassCreated(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, bool* abort);
 

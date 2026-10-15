@@ -6,55 +6,10 @@
 
 namespace GrassControl::CliffSurfaces
 {
-	static std::mutex mutex;
-	static std::unordered_map<RE::FormID, std::vector<Surface>> cells;
-
-	static constexpr std::uint32_t MaxNodesPerCliff = 4096;
-
-	static std::string NormalizeTexturePath(std::string_view path)
-	{
-		std::string result(path);
-		std::ranges::transform(result, result.begin(), [](unsigned char c) { return c == '/' ? '\\' : static_cast<char>(std::tolower(c)); });
-		for (const std::string_view prefix : { "data\\", "textures\\" }) {
-			if (result.starts_with(prefix))
-				result.erase(0, prefix.size());
-		}
-		if (const auto dot = result.rfind('.'); dot != std::string::npos && result.find('\\', dot) == std::string::npos)
-			result.resize(dot);
-		return result;
-	}
-
-	static std::string_view FileStem(std::string_view normalized)
-	{
-		const auto slash = normalized.rfind('\\');
-		return slash == std::string_view::npos ? normalized : normalized.substr(slash + 1);
-	}
-
 	// Match copied textures by file name when their directory differs from the landscape texture.
 	static RE::TESLandTexture* LandTextureFor(std::string_view texturePath)
 	{
-		struct Index
-		{
-			std::unordered_map<std::string, RE::TESLandTexture*> byPath;
-			std::unordered_map<std::string, RE::TESLandTexture*> byStem;
-		};
-		static const Index index = [] {
-			Index result;
-			for (auto* landTexture : RE::TESDataHandler::GetSingleton()->GetFormArray<RE::TESLandTexture>()) {
-				if (!landTexture || !landTexture->textureSet || landTexture->textureGrassList.empty())
-					continue;
-
-				const char* diffuse = landTexture->textureSet->GetTexturePath(RE::BSTextureSet::Texture::kDiffuse);
-				if (!diffuse || !*diffuse)
-					continue;
-
-				auto path = NormalizeTexturePath(diffuse);
-				result.byStem.try_emplace(std::string(FileStem(path)), landTexture);
-				result.byPath.try_emplace(std::move(path), landTexture);
-			}
-			logger::info("Indexed {} landscape textures with grass for cliff tops", result.byPath.size());
-			return result;
-		}();
+		const auto& index = GetTextureIndex();
 
 		const auto path = NormalizeTexturePath(texturePath);
 		if (const auto it = index.byPath.find(path); it != index.byPath.end())
@@ -62,8 +17,6 @@ namespace GrassControl::CliffSurfaces
 		if (const auto it = index.byStem.find(std::string(FileStem(path))); it != index.byStem.end())
 			return it->second;
 
-		static std::mutex unmatchedMutex;
-		static std::unordered_set<std::string> unmatched;
 		std::scoped_lock lock(unmatchedMutex);
 		if (unmatched.insert(path).second)
 			logger::info("Cliff texture {} matches no landscape texture with grass", path);

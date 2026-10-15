@@ -179,12 +179,6 @@ namespace GrassControl
 		GetSingleton().worldReadGate.EnterWriteLock(lock);
 	}
 
-	PhysicsRaycast& PhysicsRaycast::GetSingleton()
-	{
-		static PhysicsRaycast instance;
-		return instance;
-	}
-
 	// The deleting destructor returns this storage to the current Havok heap.
 	RE::hkpSimpleShapePhantom* PhysicsRaycast::AllocatePhantom()
 	{
@@ -689,7 +683,7 @@ namespace GrassControl
 		// The opaque thread key must match across both events; the receiver is unused.
 		// Construct query storage first so ThreadMemory can reset it before either thread-local object is destroyed.
 		resources.Reset();
-		static thread_local ThreadMemory memory;
+		auto& memory = GetThreadMemory();
 		if (!memory.started) {
 			memory.Send(0);
 			memory.started = true;

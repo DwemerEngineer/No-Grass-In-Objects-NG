@@ -11,31 +11,9 @@
 
 namespace GrassControl::DistantGrass
 {
-	struct RetiredGrass
+	CreationState::CreationState()
 	{
-		std::vector<RE::CellGrassData*> entries;
-		std::chrono::steady_clock::time_point deadline;
-	};
-
-	static constexpr auto RetiredGrassTimeout = std::chrono::seconds(3);
-
-	struct CreationState
-	{
-		// The workers must stop before the raycast state they access is destroyed.
-		CreationState() { PhysicsRaycast::GetSingleton(); }
-
-		std::mutex retiredMutex;
-		std::unordered_map<RE::TESObjectCELL*, RetiredGrass> retiredGrass;
-		std::atomic<std::uint64_t> swaps{ 0 };
-		// Destruction stops prefetch first, then workers, before the retired state they use is released.
-		GrassWorkers workers;
-		GrassModelPrefetch modelPrefetch;
-	};
-
-	static CreationState& State()
-	{
-		static CreationState state;
-		return state;
+		PhysicsRaycast::GetSingleton();
 	}
 
 	static bool UseGrassWorkers(const RE::BGSGrassManager* manager, RE::TESObjectCELL* cell)
@@ -456,7 +434,7 @@ namespace GrassControl::DistantGrass
 
 	void GrassNodeShards::Install()
 	{
-		static REL::Relocation<std::uintptr_t> vtable{ RE::VTABLE_NiNode[0] };
+		REL::Relocation<std::uintptr_t> vtable{ RE::VTABLE_NiNode[0] };
 		attachChild = vtable.write_vfunc(REL::Relocate(0x35, 0x35, 0x36), AttachChild);
 		detachChildOut = vtable.write_vfunc(REL::Relocate(0x37, 0x37, 0x38), DetachChildOut);
 		detachChild = vtable.write_vfunc(REL::Relocate(0x38, 0x38, 0x39), DetachChild);
