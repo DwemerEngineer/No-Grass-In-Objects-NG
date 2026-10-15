@@ -1,88 +1,88 @@
 #include "GrassControl/Main.h"
 #include "GrassControl/Config.h"
+#include "GrassControl/DistantGrass.h"
+#include "GrassControl/Engine.h"
 #include "GrassControl/Events.h"
 #include "GrassControl/GidFileCache.h"
+#include "GrassControl/Globals.h"
 #include "GrassControl/PhysicsRaycast.h"
 #include "GrassControl/RaycastHelper.h"
 #include "GrassControl/Util.h"
 
-using namespace SKSE;
-using namespace SKSE::log;
-using namespace SKSE::stl;
-
-namespace
+namespace GrassControl::Plugin
 {
-	using namespace GrassControl;
+	using namespace SKSE;
+	using namespace SKSE::log;
+	using namespace SKSE::stl;
 
-	std::atomic<std::shared_ptr<const RaycastHelper>> raycastSettings;
-	int mainMenuUpdates = 0;
+	static std::atomic<std::shared_ptr<const RaycastHelper>> raycastSettings;
+	static int mainMenuUpdates = 0;
 
-	void InitializeHooking()
+	static void InitializeHooking()
 	{
 		log::trace("Initializing trampoline...");
 		auto& trampoline = GetTrampoline();
 		trampoline.create(2048);
 		log::trace("Trampoline initialized.");
 		GrassControl::Generation::InstallHooks();
-		GrassControl::Plugin::InstallHooks();
+		InstallHooks();
 	}
 
-	bool MissingLooseCache()
+	static std::unique_ptr<Util::CachedFormList> LoadFormList(const std::string& forms, const std::string& settingName)
 	{
-		using namespace GrassControl::Util;
-		std::error_code error;
-		const auto directory = Files::GamePath(L"Data/Grass");
+		auto list = Util::CachedFormList::TryParse(forms, settingName);
+		if (list->Empty())
+			return nullptr;
 
-		std::filesystem::directory_iterator entry(directory, error), end;
-
-		if (Files::IsMissing(error)) {
-			return true;
-		}
-
-		while (!error && entry != end) {
-			if (entry->is_regular_file(error)) {
-				const auto extension = entry->path().extension().native();
-				if (CompareStringOrdinal(extension.c_str(), static_cast<int>(extension.size()), L".cgid", 5, TRUE) == CSTR_EQUAL) {
-					return false;
-				}
-			}
-
-			if (!error) {
-				entry.increment(error);
-			}
-		}
-
-		if (error) {
-			logger::error("Failed to inspect grass cache directory: {}", error.message());
-			return false;
-		}
-
-		return true;
+		list->PrintList(settingName);
+		return list;
 	}
 
-	void InitializeMessaging()
+	static void InitializeRaycastSettings()
+	{
+		if (Config::RayCast || Config::GrassCliffs) {
+			auto cachedList = LoadFormList(Config::RayCastIgnoreForms, "Ray-cast-ignore-forms");
+			auto cachedTextureList = LoadFormList(Config::RayCastTextureForms, "Ray-cast-texture-forms");
+			auto cachedCliffsList = LoadFormList(Config::GrassCliffsForms, "Grass-cliffs-forms");
+			auto cachedGrassFormsList = LoadFormList(Config::RayCastIgnoreGrassForms, "Ray-cast-ignore-grass-forms");
+
+			auto settings = std::make_shared<RaycastHelper>(static_cast<float>(Config::RayCastHeight), static_cast<float>(Config::RayCastDepth), Config::RayCastCollisionLayers, std::move(cachedList), std::move(cachedTextureList), std::move(cachedCliffsList), std::move(cachedGrassFormsList));
+			logger::info("Created Cache for Raycasting Settings");
+
+			ObjectHandler::LoadObjectConfigs(settings->cliffObjects, settings->partIgnoredObjects);
+			raycastSettings.store(std::move(settings));
+		}
+	}
+
+	static void InitializeMessaging()
 	{
 		if (!GetMessagingInterface()->RegisterListener([](MessagingInterface::Message* message) {
 				switch (message->type) {
 				case MessagingInterface::kPreLoadGame:
-					GrassControl::PhysicsRaycast::GetSingleton().SetQueriesDisabled(true);
+					PhysicsRaycast::GetSingleton().SetQueriesDisabled(true);
 					break;
 
 				case MessagingInterface::kPostLoadGame:
 				case MessagingInterface::kNewGame:
-					GrassControl::PhysicsRaycast::GetSingleton().SetQueriesDisabled(false);
-					break;
+					{
+						auto* ui = RE::UI::GetSingleton();
+						PhysicsRaycast::GetSingleton().SetQueriesDisabled(!ui || ui->IsMenuOpen(RE::MainMenu::MENU_NAME));
+						break;
+					}
 
 				case MessagingInterface::kInputLoaded:
-					GrassControl::Plugin::Initialize();
+					Initialize();
 					break;
 
 				case MessagingInterface::kDataLoaded:
-
-					GrassControl::Events::Register();
-					if (GrassControl::Config::UseGrassCache && !GrassControl::Config::loadFromBSA && MissingLooseCache() && !std::filesystem::exists(GrassControl::Util::GetProgressFilePath())) {
-						logger::info("Grass cache files are missing. You will see no grass unless you generate a Cache by creating a new text file named PrecacheGrass next to SkyrimSE.exe or SkyrimVR.exe or downloading a pre-generated Cache from the Nexus");
-						RE::DebugMessageBox("Grass cache files are missing. You will see no grass unless you generate a Cache by creating a new text file named PrecacheGrass next to SkyrimSE.exe or SkyrimVR.exe or downloading a pre-generated Cache from the Nexus");
+					InitializeRaycastSettings();
+					Events::Register();
+					if (Config::UseGrassCache && !Config::loadFromBSA && !Config::GeneratingCache && DistantGrass::gridState.cacheIndex.Empty()) {
+						const auto* message = Config::OnlyLoadFromCache ?
+					                              "Grass cache files are missing. You will see no grass unless you generate a cache by creating a new text file named PrecacheGrass next to SkyrimSE.exe or SkyrimVR.exe, or download a pre-generated cache from the Nexus." :
+					                              "Grass cache files are missing, so all grass is placed while you play. To use a cache, create a file named PrecacheGrass next to the game executable to generate one, or install a pre-generated cache from the Nexus.";
+						logger::info("{}", message);
+						RE::DebugMessageBox(message);
 					}
 
 					break;
@@ -95,7 +95,7 @@ namespace
 		}
 	}
 
-	void InitializeLog()
+	static void InitializeLog()
 	{
 		auto path = logger::log_directory();
 		if (!path) {
@@ -117,51 +117,54 @@ namespace
 		logger::info(FMT_STRING("{} v{}"), PluginDeclaration::GetSingleton()->GetName(), PluginDeclaration::GetSingleton()->GetVersion());
 	}
 
-	std::unique_ptr<Util::CachedFormList> LoadFormList(const std::string& forms, const std::string& settingName)
+	std::shared_ptr<const RaycastHelper> GetRaycastSettings()
 	{
-		auto list = Util::CachedFormList::TryParse(forms, settingName);
-		if (list->Empty())
-			return nullptr;
-
-		list->printList(settingName);
-		return list;
+		return raycastSettings.load();
 	}
 
-	void WarnExtendWithoutCache()
+	void Update()
 	{
-		auto ls = std::vector<std::string>();
-		ls.emplace_back("Warning!! You have enabled Extend-Grass-Distance without using pre-generated grass. This could lead to unstable game. Either disable Extend-Grass-Distance or pre-generate grass cache files. In order to use pre-generated grass cache you will need UseGrassCache=True and Only-Load-From-Cache=true");
-		ls.emplace_back("Check nexus page of 'No Grass In Objects' mod for more information on how to do this.");
-		ls.emplace_back("This warning won't be shown again next time you start game.");
+		PhysicsRaycast::GetSingleton().Update();
+		Generation::Update();
+		DistantGrass::Update();
 
-		try {
-			const auto path = Util::Files::GamePath(L"Data/SKSE/Plugins/GrassControl.warned.txt");
-			std::string contents;
-			std::error_code error;
-			if (Util::Files::ReadText(path, contents, error)) {
-				return;
-			}
+		// Generation starts on the second frame after the main menu opens.
+		if ((mainMenuUpdates == 1 || mainMenuUpdates == 2) && ++mainMenuUpdates == 3)
+			Generation::Start();
+	}
 
-			if (Util::Files::IsMissing(error)) {
-				contents = "Dummy file to track whether the following warning was shown:\r\n\r\n";
-				for (const auto& line : ls) {
-					contents += line + "\r\n\r\n";
-				}
-
-				if (!Util::Files::CreateText(path, contents, error)) {
-					logger::warn("Failed to create grass warning marker: {}", error.message());
-				}
-			} else {
-				logger::warn("Failed to read grass warning marker: {}", error.message());
-			}
-		} catch (const std::exception& e) {
-			logger::warn("Failed to persist grass warning: {}", e.what());
+	void OnMainMenuOpen()
+	{
+		PhysicsRaycast::GetSingleton().SetQueriesDisabled(true);
+		if (Config::UseGrassCache && Config::Updating) {
+			GidFileCache::EnableFileGeneration();
 		}
 
-		std::stringstream s;
-		std::ranges::copy(ls.begin(), ls.end(), std::ostream_iterator<std::string, char>(s, "\n\n"));
-		logger::debug("{}", s.str());
-		RE::DebugMessageBox(s.str().c_str());
+		if (Config::GeneratingCache && mainMenuUpdates == 0) {
+			mainMenuUpdates = 1;
+			if (auto* alwaysActive = globals::FindSetting("bAlwaysActive:General"))
+				alwaysActive->data.b = true;
+			if (auto* allowLoadGrass = globals::settings::allowLoadGrass)
+				allowLoadGrass->data.b = false;
+		}
+
+		if (!Config::AskedRaycastWarning && Config::RayCast && !Config::UseGrassCache) {
+			Config::AskedRaycastWarning = true;
+
+			Config::WriteBoolSetting("Debug", "Asked-Enable-Raycast-Warning", Config::AskedRaycastWarning);
+
+			auto callback = [](std::uint8_t a_idx) {
+				if (a_idx == 1) {
+					Config::RayCastError = false;
+
+					Config::WriteBoolSetting("RayCastConfig", "Ray-cast-error-message", Config::RayCastError);
+				}
+			};
+
+			auto settings = RE::GameSettingCollection::GetSingleton();
+
+			RE::ShowMessageBox("Do you want NGIO to display a warning when repeated physics queries fail in a cell? Failed queries use fallback placement, so grass may remain within objects. You can change this preference using Ray-cast-error-message in GrassControl.ini.", callback, settings->GetSetting("sYes")->GetString(), settings->GetSetting("sNo")->GetString());
+		}
 	}
 }
 
@@ -177,10 +180,11 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 
 	SKSE::Init(a_skse);
 
-	InitializeLog();
+	GrassControl::Plugin::InitializeLog();
 	GrassControl::Config::ReadSettings();
 	if (GrassControl::Config::DebugLogEnable) {
 		spdlog::default_logger()->set_level(spdlog::level::trace);
+		spdlog::default_logger()->flush_on(spdlog::level::trace);
 	}
 
 	logger::info("Game version : {}", a_skse->RuntimeVersion().string());
@@ -190,86 +194,9 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 		logger::info("Grass Cache Helper NG detected.");
 	}
 
-	InitializeHooking();
-	InitializeMessaging();
+	GrassControl::globals::OnInit();
+	GrassControl::Plugin::InitializeHooking();
+	GrassControl::Plugin::InitializeMessaging();
 
 	return true;
-}
-
-namespace GrassControl::Plugin
-{
-	std::shared_ptr<const RaycastHelper> GetRaycastSettings()
-	{
-		return raycastSettings.load();
-	}
-
-	void Update()
-	{
-		PhysicsRaycast::GetSingleton().Update();
-		Generation::Update();
-
-		if (mainMenuUpdates == 0)
-			return;
-
-		if (mainMenuUpdates == 1) {
-			mainMenuUpdates++;
-		} else if (mainMenuUpdates == 2) {
-			mainMenuUpdates++;
-
-			Generation::Start();
-		}
-	}
-
-	void OnMainMenuOpen()
-	{
-		PhysicsRaycast::GetSingleton().SetQueriesDisabled(true);
-		if (Config::UseGrassCache && Config::Updating) {
-			GidFileCache::EnableFileGeneration();
-		}
-
-		auto fi = std::filesystem::path(Util::GetProgressFilePath());
-		if (Config::UseGrassCache && exists(fi) && mainMenuUpdates == 0) {
-			mainMenuUpdates = 1;
-			Memory::Internal::write<uint8_t>(RELOCATION_ID(508798, 380767).address() + 8, 1);  // Skyrim.ini [General] bAlwaysActive=1
-			Memory::Internal::write<uint8_t>(RELOCATION_ID(501125, 359439).address() + 8, 0);  // Skyrim.ini [Grass] bAllowLoadGrass=0
-		}
-
-		if (Config::RayCast || Config::GrassCliffs) {
-			auto cachedList = LoadFormList(Config::RayCastIgnoreForms, "Ray-cast-ignore-forms");
-			auto cachedTextureList = LoadFormList(Config::RayCastTextureForms, "Ray-cast-texture-forms");
-			auto cachedCliffsList = LoadFormList(Config::GrassCliffsForms, "Grass-cliffs-forms");
-			auto cachedGrassFormsList = LoadFormList(Config::RayCastIgnoreGrassForms, "Ray-cast-ignore-grass-forms");
-
-			auto settings = std::make_shared<RaycastHelper>(static_cast<float>(Config::RayCastHeight), static_cast<float>(Config::RayCastDepth), Config::RayCastCollisionLayers, std::move(cachedList), std::move(cachedTextureList), std::move(cachedCliffsList), std::move(cachedGrassFormsList));
-			logger::info("Created Cache for Raycasting Settings");
-
-			ObjectHandler::LoadObjectConfigs(settings->cliffObjects, settings->partIgnoredObjects);
-			raycastSettings.store(std::move(settings));
-		}
-
-		if (Config::ExtendGrassDistance) {
-			if (!Config::UseGrassCache || !Config::OnlyLoadFromCache) {
-				WarnExtendWithoutCache();
-			}
-		}
-
-		if (!Config::AskedRaycastWarning && Config::RayCast && !GrassControl::Config::UseGrassCache) {
-			Config::AskedRaycastWarning = true;
-
-			Config::WriteBoolSetting("Debug", "Asked-Enable-Raycast-Warning", Config::AskedRaycastWarning);
-
-			auto callback = [](std::uint8_t a_idx) {
-				if (a_idx == 1) {
-					Config::RayCastError = false;
-
-					Config::WriteBoolSetting("RayCastConfig", "Ray-cast-error-message", Config::RayCastError);
-				}
-			};
-
-			auto settings = RE::GameSettingCollection::GetSingleton();
-
-			static REL::Relocation<void (*)(const char*, void (*a_callback)(std::uint8_t), std::uint32_t, std::uint32_t, std::uint32_t, const char*, const char*, const char*)> func{ RELOCATION_ID(51420, 52269) };
-			func("Do you want NGIO to display a warning when repeated physics queries fail in a cell? Failed queries use fallback placement, so grass may remain within objects. You can change this preference using Ray-cast-error-message in GrassControl.ini.", callback, 0, 0x19, 10, settings->GetSetting("sYes")->GetString(), settings->GetSetting("sNo")->GetString(), nullptr);
-		}
-	}
 }

@@ -1,5 +1,10 @@
 #pragma once
 
+namespace GrassControl::Util
+{
+	struct ShapeSnapshot;
+}
+
 namespace GrassControl
 {
 	class RaycastHelper;
@@ -28,6 +33,7 @@ namespace GrassControl
 		{
 			QueryStatus status = QueryStatus::Unavailable;
 			std::vector<HitResult> hits;
+			const char* unavailableReason = "no cell";
 		};
 
 		struct ShapeNames
@@ -37,6 +43,8 @@ namespace GrassControl
 		};
 
 		static PhysicsRaycast& GetSingleton();
+		// Exposes waiting writers so grass readers can yield before taking the world lock.
+		static void InstallWriterSignal();
 
 		RayResult CastRay(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL* cell, const RaycastHelper& settings, bool ignoreCliff = false);
 
@@ -46,14 +54,99 @@ namespace GrassControl
 
 		static bool ValidateSettings(const RaycastHelper& settings);
 
+		static bool ValidPoint(float x, float y, float z);
+
 		void SetQueriesDisabled(bool disabled);
+
+		bool CanFilterCell(const RE::TESObjectCELL& cell);
+
+		void DeferCell(RE::TESObjectCELL* cell);
 
 		void ReportAllocationFailure();
 
-		// DebugMessageBox must be called on the game thread.
+		void ReportStatistics();
+
+		// Grass dispatch and DebugMessageBox require the game thread.
 		void Update();
 
+		// Counts unavailable queries on this thread; affected grass needs another filtering pass.
+		static std::uint32_t UnavailableQueries() { return unavailableQueries; }
+
+		static void AddUnavailableQueries(std::uint32_t count) { unavailableQueries += count; }
+
+		// Returns false if the thread has no usable Havok heap after initialization.
+		static bool EnsureThreadMemory();
+
 	private:
+		inline static constexpr float HavokScale = 0.0142875f;
+		inline static constexpr double MaxDimension = 65536.0;
+		inline static constexpr std::size_t MaxHits = 4096;
+
+		static bool ValidDimension(double value);
+		static bool ValidSettingsValues(int mode, double height, double depth, double width, double multiplier, double textureWidth);
+		static bool ValidHit(float fraction, float x, float y, float z);
+		static bool ValidRay(const glm::vec4& start, const glm::vec4& end);
+
+		// Readers share short windows and leave gaps for the engine's polling writers to acquire the world lock.
+		class WorldReadGate final
+		{
+		public:
+			void InstallWriterSignal();
+			void EnterWriteLock(RE::BSReadWriteLock* lock);
+			void Enter(RE::bhkWorld* world);
+			void Exit();
+
+		private:
+			inline static constexpr auto WindowLength = std::chrono::microseconds(2000);
+			inline static constexpr auto WriterGap = std::chrono::microseconds(300);
+
+			std::atomic<RE::BSReadWriteLock*> watchedLock{ nullptr };
+			std::atomic<std::uint32_t> watchedWriters{ 0 };
+			bool installed = false;
+			std::mutex mutex;
+			std::condition_variable drained;
+			RE::bhkWorld* owner = nullptr;
+			std::uint32_t readers = 0;
+			std::chrono::steady_clock::time_point opened;
+			std::chrono::steady_clock::time_point reopenAt;
+			inline static thread_local std::uint32_t depth = 0;
+		};
+
+		struct WorldReadGuard
+		{
+			WorldReadGuard(WorldReadGate& gate, RE::bhkWorld* world);
+			~WorldReadGuard();
+			WorldReadGuard(const WorldReadGuard&) = delete;
+			WorldReadGuard& operator=(const WorldReadGuard&) = delete;
+
+		private:
+			WorldReadGate& gate;
+		};
+
+		struct ThreadEvent
+		{
+			const void* thread;
+			std::uint32_t type;
+		};
+
+		struct ThreadMemory
+		{
+			void Send(std::uint32_t type) const;
+			~ThreadMemory();
+
+			bool started = false;
+		};
+
+		// Share snapshots across placement threads to avoid repeated model walks under the renderer lock.
+		struct ShapeCache
+		{
+			std::mutex mutex;
+			std::unordered_map<std::uint32_t, std::shared_ptr<const Util::ShapeSnapshot>> snapshots;
+			std::chrono::steady_clock::time_point snapshotsTaken = std::chrono::steady_clock::now();
+		};
+
+		static void EnterWriteLock(RE::BSReadWriteLock* lock);
+
 		struct alignas(16) BoxInfo
 		{
 			std::uint32_t material = 0;
@@ -85,7 +178,6 @@ namespace GrassControl
 		};
 
 		// Implements hkpCdBodyPairCollector ABI: virtual slots 0-2 and earlyOut at +8.
-		// CommonLib only forward-declares the interface.
 		class BodyCollector final
 		{
 		public:
@@ -115,15 +207,25 @@ namespace GrassControl
 		{
 			void Reset();
 
+			void SetShape(int mode, float halfWidthX, float halfWidthY, float radius, float height);
+
 			bool PrepareShape(const RaycastHelper& settings, float halfWidthX, float halfWidthY, float radius, float height);
 
 			// Must remain unattached so dimensions can change without updating broadphase pairs.
 			std::unique_ptr<RE::hkpSimpleShapePhantom, HavokDelete> shapePhantom;
 			RE::NiPointer<RE::bhkShape> shape;
 			int shapeMode = -1;
+			RE::FormID errorCell = 0;
+			unsigned errors = 0;
 		};
 
 		PhysicsRaycast() = default;
+
+		void RetryPendingCells();
+
+		bool CellHasCollision(const RE::TESObjectCELL& cell) const;
+
+		static const RE::hkpCdBody* RootBody(const RE::hkpCdBody& body);
 
 		RayResult Query(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL* cell, const RaycastHelper& settings, bool ignoreCliff, RE::GrassParam* param, bool volumeQuery);
 
@@ -133,11 +235,20 @@ namespace GrassControl
 
 		static RE::hkpSimpleShapePhantom* AllocatePhantom();
 
-		std::mutex queryMutex;
-		QueryResources resources;
-		bool queriesDisabled = true;
-		RE::FormID errorCell = 0;
-		unsigned errors = 0;
-		bool warningPending = false;
+		WorldReadGate worldReadGate;
+
+		// Exclusive access drains active queries before loading can replace their world.
+		std::shared_mutex queryMutex;
+		inline static thread_local QueryResources resources;
+		inline static thread_local std::uint32_t unavailableQueries = 0;
+		std::mutex pendingMutex;
+		std::unordered_set<RE::FormID> pendingCells;
+		std::chrono::steady_clock::time_point lastRetry{};
+		std::atomic<bool> queriesDisabled{ true };
+		std::atomic<bool> warningPending{ false };
+		std::array<std::atomic<std::uint64_t>, 4> queryCounts{};
+		std::atomic<std::uint64_t> queriesWithHits{ 0 };
+		std::atomic<const char*> lastUnavailableReason{ "none" };
+		ShapeCache shapeCache;
 	};
 }

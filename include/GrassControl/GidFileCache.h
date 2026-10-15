@@ -6,123 +6,70 @@ namespace GrassControl::GidFileCache
 {
 	void SetHelperInstalled(bool installed);
 
-	void FixFileFormat(bool onlyLoad);
+	// Use NGIO's .cgid extension and PC instance layout.
+	void FixFileFormat();
 
 	void EnableFileGeneration();
 }
 
+// Generation moves the player to load each grid through the engine.
 namespace GrassControl::Generation
 {
-	class GidFileWorldGenerateTask;
-
-	class GidFileCellGenerateTask;
-
-	using ProgressSet = std::unordered_set<std::string, Util::CaseInsensitiveString::Hash, Util::CaseInsensitiveString::Equal>;
-
-	class GidFileGenerationTask final
+	class CacheGenerator final
 	{
 	public:
-		GidFileGenerationTask();
+		CacheGenerator();
 
-		bool RunOne();
-
-		bool HasDone(const std::string& key, const std::string& wsName, int x = INT_MIN, int y = INT_MIN) const;
-
-		void WriteProgressFile(const std::string& key, const std::string& wsName, int x = INT_MIN, int y = INT_MIN);
-
-		int GetCompletedWorldspaces() const { return DoneWS; }
-
-		int GetTotalWorldspaces() const { return TotalWS; }
+		bool Step();
+		void MarkCell(std::string_view world, int x, int y);
 
 	private:
-		void Init();
+		using ProgressSet = std::unordered_set<std::string, Util::CaseInsensitiveString::Hash, Util::CaseInsensitiveString::Equal>;
 
-		void Begin();
+		inline static constexpr int GridHalf = 64;
+		inline static constexpr int GridSide = GridHalf * 2 + 1;
 
-		void End();
+		struct World
+		{
+			RE::TESWorldSpace* world;
+			std::string name;
+		};
 
-		mutable std::mutex ProgressLocker;
-		std::ofstream FileStream;
-		bool IsResuming = false;
-		ProgressSet ProgressDone;
-		std::vector<std::unique_ptr<GidFileWorldGenerateTask>> WorldTodo;
-		int DoneWS = 0;
-		int TotalWS = 0;
-		int _istate = 0;
-	};
+		void Prepare();
+		void BeginWorld();
+		static std::size_t Index(int x, int y);
+		bool IsPending(int x, int y) const;
+		void Clear(int x, int y, bool completed = false);
+		std::pair<int, int> NextCell() const;
+		bool VisitCell(int x, int y);
+		void Finish();
+		bool HasDone(const std::string& key) const;
+		void MarkDone(const std::string& key);
 
-	class GidFileWorldGenerateTask final
-	{
-	public:
-		GidFileWorldGenerateTask(GidFileGenerationTask& parent, RE::TESWorldSpace* ws, const std::string& wsName);
-
-		GidFileGenerationTask& Parent;
-
-		RE::TESWorldSpace* WorldSpace;
-
-		std::string Name;
-
-		int TotalCellDo = 0;
-
-		int DidCellDo = 0;
-
-		bool RunOne();
-
-		void Remove(GidFileCellGenerateTask* t);
-
-	private:
-		std::list<GidFileCellGenerateTask*> CellTodo{};
-
-		std::vector<std::unique_ptr<GidFileCellGenerateTask>> _grid{};
-
-		void Free();
-
-		void Begin();
-
-		void End() const;
-
-		int _istate = 0;
-
-		[[nodiscard]] GidFileCellGenerateTask* GetGrid(int x, int y) const;
-
-		int uhalf = 0;
-		int ugrid = 0;
-
-		[[nodiscard]] GidFileCellGenerateTask* FindBestTodo() const;
-	};
-
-	class GidFileCellGenerateTask final
-	{
-	public:
-		GidFileCellGenerateTask(GidFileWorldGenerateTask& parent, int x, int y);
-
-		GidFileWorldGenerateTask& Parent;
-
-		const int X;
-
-		const int Y;
-
-		bool RunOne();
-
-	private:
-		RE::TESObjectCELL* Cell{};
-
-		bool Begin();
-
-		void End();
-
-		bool Process();
+		mutable std::mutex mutex;
+		std::ofstream progressFile;
+		ProgressSet done;
+		std::vector<World> worlds;
+		int totalWorlds = 0;
+		int doneWorlds = 0;
+		bool prepared = false;
+		bool worldStarted = false;
+		std::vector<bool> pending;
+		int pendingCount = 0;
+		int doneCells = 0;
+		int uGrids = 5;
+		int uHalf = 2;
 	};
 
 	void InstallHooks();
 
 	void ApplyPatches();
 
+	void Enable();
+
 	void Start();
 
 	void Update();
-
-	void Enable();
 
 	void OnGrassQueued();
 

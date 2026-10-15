@@ -7,9 +7,9 @@
     "glm",
     "nlohmann-json",
     "rapidcsv",
-    "rsm-binary-io",
     "simpleini",
     "spdlog",
+    "tbb",
     "xbyak"
   ],
   "license": "GPL-3.0-or-later",

@@ -1,8 +1,8 @@
 #pragma once
 
-#include <GrassControl/Config.h>
-#include <GrassControl/ObjectHandler.h>
-#include <GrassControl/Util.h>
+#include "GrassControl/Config.h"
+#include "GrassControl/ObjectHandler.h"
+#include "GrassControl/Util.h"
 
 namespace GrassControl
 {
@@ -29,8 +29,21 @@ namespace GrassControl
 		std::unordered_map<RE::FormID, CliffObject> cliffObjects;
 		std::unordered_map<RE::FormID, PartIgnoredObject> partIgnoredObjects;
 
-		bool CanPlaceGrass(RE::TESObjectLAND* land, float x, float y, float z, RE::GrassParam* param, bool& hitCliff, bool& falseCliff) const;
+		// Exempt candidates bypass both texture and collision filtering.
+		bool IsExempt(RE::TESObjectLAND* land, float x, float y, float z, const RE::GrassParam* param) const;
 
-		float CreateGrassCliff(RE::TESObjectLAND* land, float x, float y, float z, glm::vec3& normal, RE::GrassParam* param, bool& falseCliff) const;
+		// Reads the loaded-cell grid; do not call from placement workers.
+		bool OnBlockedTexture(float x, float y, float z) const;
+
+		bool IsCliff(RE::FormID formID) const;
+
+		/** @brief True when the object's _NGIO CliffObjects entry names shapes, so only some of its shapes are cliffs. */
+		bool HasCliffShapeRule(RE::FormID formID) const;
+
+		/** @brief True when the hit lands on a cliff shape: any shape of a listed cliff, or an allowed shape of a shape-filtered one. */
+		bool IsCliffAt(RE::FormID formID, RE::ObjectRefHandle reference, const RE::NiPoint3& point) const;
+
+		// Checks collision only; callers apply texture filtering separately.
+		bool CanPlaceGrass(RE::TESObjectLAND* land, float x, float y, float z, RE::GrassParam* param, bool ignoreCliffs) const;
 	};
 }

@@ -3,17 +3,17 @@
 namespace GrassControl
 {
 	class RaycastHelper;
-}
 
-namespace GrassControl::Plugin
-{
-	void Initialize();
+	namespace Plugin
+	{
+		void Initialize();
 
-	void InstallHooks();
+		void InstallHooks();
 
-	void OnMainMenuOpen();
+		void OnMainMenuOpen();
 
-	void Update();
+		void Update();
 
-	[[nodiscard]] std::shared_ptr<const RaycastHelper> GetRaycastSettings();
+		[[nodiscard]] std::shared_ptr<const RaycastHelper> GetRaycastSettings();
+	}
 }

@@ -18,7 +18,6 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_DEBUG OFF)
 set(CMAKE_OPTIMIZE_DEPENDENCIES ON)
 set(SKSE_SUPPORT_XBYAK ON)
 
-
 include(GNUInstallDirs)
 
 configure_file(
@@ -36,11 +35,15 @@ configure_file(
 set(sources
   src/PCH.cpp
   src/Main.cpp
+  src/AddCellGrassTask.cpp
+  src/CliffSurfaces.cpp
   src/Config.cpp
   src/ObjectHandler.cpp
   src/Events.cpp
   src/Hooks.cpp
   src/DistantGrass.cpp
+  src/GrassCellCreation.cpp
+  src/GrassPatchCreation.cpp
   src/GidFileCache.cpp
   src/PhysicsRaycast.cpp
   src/RaycastHelper.cpp
@@ -73,15 +76,19 @@ add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
 
 find_path(SIMPLEINI_INCLUDE_DIRS "SimpleIni.h" REQUIRED)
 find_path(CLIBUTIL_INCLUDE_DIRS "CLibUtil/string.hpp" REQUIRED)
+find_package(TBB CONFIG REQUIRED COMPONENTS tbb)
+get_target_property(TBB_LIBRARY_TYPE TBB::tbb TYPE)
+if(NOT TBB_LIBRARY_TYPE STREQUAL "STATIC_LIBRARY")
+  message(FATAL_ERROR "NGIO requires static oneTBB to avoid runtime DLL conflicts with other SKSE plugins.")
+endif()
 
 find_path(GLM_INCLUDE_DIRS "glm/glm.hpp" REQUIRED)
 target_include_directories(${PROJECT_NAME} PRIVATE ${GLM_INCLUDE_DIRS})
 
-
-
 target_link_libraries(
   ${PROJECT_NAME}
   PRIVATE
+  TBB::tbb
   debug ${CMAKE_CURRENT_SOURCE_DIR}/external/CasualLibrary1.0/lib/x64/Debug/CasualLibrary.lib
   optimized ${CMAKE_CURRENT_SOURCE_DIR}/external/CasualLibrary1.0/lib/x64/Release/CasualLibrary.lib
 )

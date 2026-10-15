@@ -1,25 +1,22 @@
 #pragma once
 
-#include <GrassControl/Stopwatch.hpp>
-
-namespace GrassControl
+// Cell timings are recorded only when Profiler-report is enabled.
+namespace GrassControl::Profiler
 {
-	class Profiler final
+	void Record(std::chrono::steady_clock::duration time);
+
+	void Report();
+
+	class Scope final
 	{
 	public:
-		void Begin();
+		Scope() = default;
+		~Scope();
 
-		void End();
-
-		void Report();
+		Scope(const Scope&) = delete;
+		Scope& operator=(const Scope&) = delete;
 
 	private:
-		std::vector<long long> Times;
-
-		std::vector<std::pair<int, long long>> Progress;
-
-		std::mutex Locker;
-
-		stopwatch::Stopwatch Timer;
+		std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
 	};
 }

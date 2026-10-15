@@ -1,14 +1,17 @@
 #include "GrassControl/PhysicsRaycast.h"
+
+#include "GrassControl/AddCellGrassTask.h"
+#include "GrassControl/Config.h"
+#include "GrassControl/DistantGrass.h"
+#include "GrassControl/Engine.h"
 #include "GrassControl/RaycastHelper.h"
+#include "GrassControl/Util.h"
 
-namespace
+namespace GrassControl
 {
-	inline constexpr float HavokScale = 0.0142875f;
-	inline constexpr double MaxDimension = 65536.0;
+	bool PhysicsRaycast::ValidDimension(double value) { return std::isfinite(value) && value > 0.001 && value <= MaxDimension; }
 
-	inline bool ValidDimension(double value) { return std::isfinite(value) && value > 0.001 && value <= MaxDimension; }
-
-	inline bool ValidSettingsValues(int mode, double height, double depth, double width, double multiplier, double textureWidth)
+	bool PhysicsRaycast::ValidSettingsValues(int mode, double height, double depth, double width, double multiplier, double textureWidth)
 	{
 		return mode >= 0 && mode <= 2 && std::isfinite(height) && height >= 0 && height <= MaxDimension &&
 		       std::isfinite(depth) && depth >= 0 && depth <= MaxDimension && ValidDimension(height + depth) &&
@@ -17,13 +20,13 @@ namespace
 		       std::isfinite(textureWidth) && textureWidth >= 0 && textureWidth <= MaxDimension;
 	}
 
-	inline bool ValidPoint(float x, float y, float z)
+	bool PhysicsRaycast::ValidPoint(float x, float y, float z)
 	{
 		return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
 		       std::abs(x) <= 100000000.0f && std::abs(y) <= 100000000.0f && std::abs(z) <= 100000000.0f;
 	}
 
-	inline bool ValidHit(float fraction, float x, float y, float z)
+	bool PhysicsRaycast::ValidHit(float fraction, float x, float y, float z)
 	{
 		const double lengthSquared = double(x) * x + double(y) * y + double(z) * z;
 
@@ -31,8 +34,102 @@ namespace
 		       std::isfinite(lengthSquared) && lengthSquared > 0.000001 && lengthSquared < 4.0;
 	}
 
-	inline void SetQueryShape(RE::bhkShape* wrapper, int mode, float halfWidthX, float halfWidthY, float radius, float height)
+	// Count pending writers before polling so new grass readers yield to them.
+	void PhysicsRaycast::WorldReadGate::EnterWriteLock(RE::BSReadWriteLock* lock)
 	{
+		auto* writerThread = reinterpret_cast<volatile long*>(lock);
+		auto* state = writerThread + 1;
+		const auto thread = static_cast<long>(GetCurrentThreadId());
+		if (*writerThread == thread) {
+			_InterlockedIncrement(state);
+			return;
+		}
+
+		const bool watched = lock == watchedLock.load(std::memory_order_relaxed);
+		if (watched)
+			watchedWriters.fetch_add(1);
+		for (std::uint32_t tries = 0; _InterlockedCompareExchange(state, static_cast<long>(0x80000001), 0);) {
+			if (tries < 10000) {
+				++tries;
+				Sleep(0);
+			} else {
+				Sleep(1);
+			}
+		}
+		if (watched)
+			watchedWriters.fetch_sub(1);
+		*writerThread = thread;
+		_mm_mfence();
+	}
+
+	void PhysicsRaycast::WorldReadGate::Enter(RE::bhkWorld* world)
+	{
+		// A thread already inside the window must not wait for the window to drain.
+		if (depth++)
+			return;
+
+		watchedLock.store(&world->worldLock, std::memory_order_relaxed);
+		std::unique_lock lock(mutex);
+		for (;;) {
+			const auto now = std::chrono::steady_clock::now();
+			if (!readers && now - opened >= WindowLength)
+				reopenAt = std::max(reopenAt, opened + WindowLength + WriterGap);
+			const bool writerWaiting = watchedWriters.load() != 0;
+			if (readers && owner == world && now - opened < WindowLength && !writerWaiting) {
+				++readers;
+				return;
+			}
+			if (!readers && now >= reopenAt && !writerWaiting)
+				break;
+			if (readers) {
+				drained.wait(lock);
+			} else {
+				const auto nextRead = reopenAt;
+				lock.unlock();
+				while (std::chrono::steady_clock::now() < nextRead || watchedWriters.load())
+					std::this_thread::yield();
+				lock.lock();
+			}
+		}
+		owner = world;
+		const auto now = std::chrono::steady_clock::now();
+		if (now - opened >= WindowLength)
+			opened = now;
+		readers = 1;
+		world->worldLock.LockForRead();
+	}
+
+	void PhysicsRaycast::WorldReadGate::Exit()
+	{
+		if (--depth)
+			return;
+
+		std::scoped_lock lock(mutex);
+		if (--readers)
+			return;
+		owner->worldLock.UnlockForRead();
+		owner = nullptr;
+		const auto now = std::chrono::steady_clock::now();
+		reopenAt = now;
+		if (now - opened >= WindowLength || watchedWriters.load())
+			reopenAt += WriterGap;
+		drained.notify_all();
+	}
+
+	PhysicsRaycast::WorldReadGuard::WorldReadGuard(WorldReadGate& gate, RE::bhkWorld* world) :
+		gate(gate)
+	{
+		gate.Enter(world);
+	}
+
+	PhysicsRaycast::WorldReadGuard::~WorldReadGuard()
+	{
+		gate.Exit();
+	}
+
+	void PhysicsRaycast::QueryResources::SetShape(int mode, float halfWidthX, float halfWidthY, float radius, float height)
+	{
+		auto* wrapper = shape.get();
 		if (mode == 1) {
 			auto* capsule = static_cast<RE::hkpCapsuleShape*>(wrapper->referencedObject.get());
 			const float scaledRadius = radius * HavokScale;
@@ -52,18 +149,36 @@ namespace
 		}
 	}
 
-	constexpr std::size_t MaxHits = 4096;
-
-	bool ValidRay(const glm::vec4& start, const glm::vec4& end)
+	bool PhysicsRaycast::ValidRay(const glm::vec4& start, const glm::vec4& end)
 	{
 		const auto difference = end - start;
 		return ValidPoint(start.x, start.y, start.z) && ValidPoint(end.x, end.y, end.z) &&
 		       ValidDimension(glm::length(glm::vec3(difference)));
 	}
-}
 
-namespace GrassControl
-{
+	void PhysicsRaycast::WorldReadGate::InstallWriterSignal()
+	{
+		if (installed)
+			return;
+		const auto address = RELOCATION_ID(66977, 68234).address();
+		if (REL::make_pattern<"E9">().match(address) || REL::make_pattern<"FF 25">().match(address)) {
+			logger::warn("World write lock is already hooked; retaining its handler and using timed query windows.");
+			return;
+		}
+		SKSE::GetTrampoline().write_branch<5>(address, PhysicsRaycast::EnterWriteLock);
+		installed = true;
+	}
+
+	void PhysicsRaycast::InstallWriterSignal()
+	{
+		GetSingleton().worldReadGate.InstallWriterSignal();
+	}
+
+	void PhysicsRaycast::EnterWriteLock(RE::BSReadWriteLock* lock)
+	{
+		GetSingleton().worldReadGate.EnterWriteLock(lock);
+	}
+
 	PhysicsRaycast& PhysicsRaycast::GetSingleton()
 	{
 		static PhysicsRaycast instance;
@@ -77,18 +192,27 @@ namespace GrassControl
 		return router && router->Heap ? static_cast<RE::hkpSimpleShapePhantom*>(router->Heap->BlockAlloc(sizeof(RE::hkpSimpleShapePhantom))) : nullptr;
 	}
 
-	bool PhysicsRaycast::CopyHit(const RE::hkpCdBody& body, const RaycastHelper& settings, bool ignoreCliff, HitResult& hit, bool& invalid)
+	const RE::hkpCdBody* PhysicsRaycast::RootBody(const RE::hkpCdBody& body)
 	{
 		const auto* root = &body;
 		std::size_t depth = 0;
 
 		while (root->parent) {
-			if (++depth > 64) {
-				invalid = true;
-				return false;
-			}
+			if (++depth > 64)
+				return nullptr;
 
 			root = root->parent;
+		}
+
+		return root;
+	}
+
+	bool PhysicsRaycast::CopyHit(const RE::hkpCdBody& body, const RaycastHelper& settings, bool ignoreCliff, HitResult& hit, bool& invalid)
+	{
+		const auto* root = RootBody(body);
+		if (!root) {
+			invalid = true;
+			return false;
 		}
 
 		const auto* collidable = static_cast<const RE::hkpCollidable*>(root);
@@ -102,49 +226,64 @@ namespace GrassControl
 		if (reference) {
 			if (const auto* form = reference->GetBaseObject())
 				hit.formID = form->formID;
-
-			hit.reference = reference->GetHandle();
 		}
 
 		if (settings.Ignore && settings.Ignore->Contains(hit.formID))
 			return false;
 
-		hit.hitCliff = (settings.Cliffs && settings.Cliffs->Contains(hit.formID)) || settings.cliffObjects.contains(hit.formID);
-		if (ignoreCliff && hit.hitCliff)
+		hit.hitCliff = settings.IsCliff(hit.formID);
+		// Shape-filtered cliffs are only partly cliff, so the caller decides once it knows which shape was hit.
+		const bool shapeRule = hit.hitCliff && settings.HasCliffShapeRule(hit.formID);
+		if (ignoreCliff && hit.hitCliff && !shapeRule)
 			return false;
+
+		if (reference && (shapeRule || settings.partIgnoredObjects.contains(hit.formID)))
+			hit.reference = reference->GetHandle();
 
 		return true;
 	}
 
+	bool PhysicsRaycast::CellHasCollision(const RE::TESObjectCELL& cell) const
+	{
+		const auto* loaded = cell.GetRuntimeData().loadedData;
+		return cell.IsAttached() && loaded && loaded->refsFullyLoaded && !loaded->criticalQueuedRefCount && !loaded->queuedRefCount;
+	}
+
 	PhysicsRaycast::RayResult PhysicsRaycast::CastInWorld(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL& cell, const RaycastHelper& settings, bool ignoreCliff, RE::GrassParam* param, bool volumeQuery)
 	{
-		if (queriesDisabled || !cell.IsAttached() || cell.IsInteriorCell())
-			return {};
+		if (queriesDisabled)
+			return { QueryStatus::Unavailable, {}, "loading disabled queries" };
 
-		// queryMutex prevents loading suspension while the borrowed world wrapper is retained.
+		// Attachment can precede the reference tasks that add collision to Havok.
+		if (!CellHasCollision(cell) || cell.IsInteriorCell())
+			return { QueryStatus::Unavailable, {}, "cell references are not loaded" };
+
+		// queryMutex keeps loading from replacing the borrowed world wrapper.
 		RE::NiPointer<RE::bhkWorld> owner(cell.GetbhkWorld());
 		if (!owner)
-			return {};
+			return { QueryStatus::Unavailable, {}, "no Havok world wrapper" };
 
 		const auto* router = RE::hkMemoryRouter::GetInstancePtr();
 		if (!router || !router->Heap)
-			return {};
+			return { QueryStatus::Unavailable, {}, "no Havok memory router or heap on worker" };
 
-		RE::BSReadLockGuard worldLock(owner->worldLock);
+		WorldReadGuard worldLock(worldReadGate, owner.get());
 
 		RE::hkRefPtr<RE::hkpWorld> world(owner->GetWorld1());
-		if (!world || !cell.IsAttached() || cell.GetbhkWorld() != owner.get())
-			return {};
+		if (!world || !CellHasCollision(cell) || cell.GetbhkWorld() != owner.get())
+			return { QueryStatus::Unavailable, {}, "Havok world changed or cell is unloading" };
 
 		const auto havokStart = start * HavokScale;
 		const auto havokEnd = end * HavokScale;
 
 		if (volumeQuery) {
 			if (!world->collisionInput)
-				return {};
+				return { QueryStatus::Unavailable, {}, "no Havok collision input" };
 
 			float halfWidthX = 20, halfWidthY = 20, radius = 20;
-			if (param) {
+			if (settings.Width > 0) {
+				halfWidthX = halfWidthY = radius = static_cast<float>(settings.Width / 2);
+			} else if (param) {
 				if (auto* grass = RE::TESForm::LookupByID<RE::TESGrass>(param->grassFormID)) {
 					const auto& bounds = grass->boundData;
 					if (bounds.boundMax.x != 0 && bounds.boundMin.x != 0) {
@@ -157,9 +296,6 @@ namespace GrassControl
 				}
 			}
 
-			if (settings.Width > 0)
-				halfWidthX = halfWidthY = radius = static_cast<float>(settings.Width / 2);
-
 			const float height = end.z - start.z;
 			if (!ValidDimension(height) ||
 				(settings.Mode == 1 ? !ValidDimension(radius) : (!ValidDimension(halfWidthX) || !ValidDimension(halfWidthY))))
@@ -168,12 +304,12 @@ namespace GrassControl
 			if (!resources.PrepareShape(settings, halfWidthX, halfWidthY, radius, height))
 				return { QueryStatus::Failed, {} };
 
-			resources.shapePhantom->SetPosition(RE::hkVector4(havokStart.x, havokStart.y, settings.Mode == 1 ? havokStart.z : (havokStart.z + havokEnd.z) / 2, 1));
+			const RE::hkVector4 position(havokStart.x, havokStart.y, settings.Mode == 1 ? havokStart.z : (havokStart.z + havokEnd.z) / 2, 1.0f);
+			resources.shapePhantom->SetPosition(position);
 
 			BodyCollector collector(settings, ignoreCliff, resources.shapePhantom->GetCollidable());
 
-			REL::Relocation<void (*)(const RE::hkpWorld*, const RE::hkpCollidable*, const RE::hkpCollisionInput&, RE::hkpCdBodyPairCollector&)> getPenetrations{ RELOCATION_ID(60558, 61406) };
-			getPenetrations(world.get(), resources.shapePhantom->GetCollidable(), *world->collisionInput, *reinterpret_cast<RE::hkpCdBodyPairCollector*>(&collector));
+			RE::GetPenetrations(world.get(), resources.shapePhantom->GetCollidable(), *world->collisionInput, &collector);
 			if (collector.invalid)
 				return { QueryStatus::Failed, {} };
 
@@ -187,8 +323,7 @@ namespace GrassControl
 		input.to = RE::hkVector4(havokEnd.x, havokEnd.y, havokEnd.z, 1);
 
 		// Use the collector overload so ignored hits cannot hide other blockers.
-		REL::Relocation<void (*)(const RE::hkpWorld*, const RE::hkpWorldRayCastInput&, RE::hkpRayHitCollector&)> cast{ RELOCATION_ID(60552, 61400) };
-		cast(world.get(), input, collector);
+		RE::CastRay(world.get(), input, collector);
 		if (collector.invalid)
 			return { QueryStatus::Failed, {} };
 
@@ -203,11 +338,11 @@ namespace GrassControl
 		if (!cell)
 			return {};
 
-		std::scoped_lock lock(queryMutex);
+		std::shared_lock lock(queryMutex);
 
-		if (errorCell != cell->formID) {
-			errorCell = cell->formID;
-			errors = 0;
+		if (resources.errorCell != cell->formID) {
+			resources.errorCell = cell->formID;
+			resources.errors = 0;
 		}
 
 		RayResult result;
@@ -218,11 +353,19 @@ namespace GrassControl
 			resources.Reset();
 		}
 
+		queryCounts[static_cast<std::size_t>(result.status)].fetch_add(1, std::memory_order_relaxed);
+		if (result.status == QueryStatus::Success && !result.hits.empty())
+			queriesWithHits.fetch_add(1, std::memory_order_relaxed);
+		if (result.status == QueryStatus::Unavailable) {
+			lastUnavailableReason = result.unavailableReason;
+			++unavailableQueries;
+		}
+
 		if (result.status == QueryStatus::Failed || result.status == QueryStatus::InvalidInput) {
-			if (errors < 20) {
-				++errors;
+			if (resources.errors < 20) {
+				++resources.errors;
 				logger::warn("Raycast query failed in cell 0x{:x}, status {}", cell->formID, static_cast<int>(result.status));
-				if (errors == 20)
+				if (resources.errors == 20)
 					warningPending = true;
 			}
 		}
@@ -282,7 +425,21 @@ namespace GrassControl
 			return;
 
 		HitResult hit{};
-		if (CopyHit(&a == queryBody ? b : a, settings, ignoreCliff, hit, invalid)) {
+		const auto* rootA = RootBody(a);
+		const auto* rootB = RootBody(b);
+		if (!rootA || !rootB) {
+			invalid = true;
+			return;
+		}
+
+		// Compound agents can pass child bodies instead of the original collidables.
+		if (rootA != queryBody && rootB != queryBody) {
+			invalid = true;
+			return;
+		}
+
+		const auto* other = rootA == queryBody ? rootB : rootA;
+		if (CopyHit(*other, settings, ignoreCliff, hit, invalid)) {
 			if (hits.size() >= MaxHits) {
 				invalid = true;
 				return;
@@ -326,19 +483,16 @@ namespace GrassControl
 				RE::NiPoint3 bottom(0, 0, 0);
 				RE::NiPoint3 top(0, 0, height);
 
-				REL::Relocation<RE::bhkShape* (*)(RE::bhkShape*, RE::NiPoint3&, RE::NiPoint3&, float)> constructCapsule{ RELOCATION_ID(76924, 78799) };
-				constructed = constructCapsule(storage, bottom, top, radius);
+				constructed = RE::ConstructCapsuleShape(storage, bottom, top, radius);
 			} else {
 				RE::NiPoint3 extents(halfWidthX, halfWidthY, height / 2);
 
-				REL::Relocation<RE::bhkShape* (*)(RE::bhkShape*, RE::NiPoint3*)> constructBox{ RELOCATION_ID(38677, 78820) };
-				constructed = constructBox(storage, &extents);
+				constructed = RE::ConstructBoxShape(storage, &extents);
 
 				if (constructed && REL::Module::IsAE()) {
 					BoxInfo info{};
 					info.halfExtents = RE::hkVector4(halfWidthX * HavokScale, halfWidthY * HavokScale, height * HavokScale / 2, 0);
-					REL::Relocation<void (*)(RE::bhkShape*, const BoxInfo*)> initializeBox{ RELOCATION_ID(76940, 78815) };
-					initializeBox(constructed, &info);
+					RE::InitializeBoxShape(constructed, &info);
 				}
 			}
 
@@ -354,7 +508,7 @@ namespace GrassControl
 		if (!shape->referencedObject)
 			return false;
 
-		SetQueryShape(shape.get(), settings.Mode, halfWidthX, halfWidthY, radius, height);
+		SetShape(settings.Mode, halfWidthX, halfWidthY, radius, height);
 
 		if (!shapePhantom) {
 			auto* storage = AllocatePhantom();
@@ -367,8 +521,7 @@ namespace GrassControl
 			identityTransform.rotation.col2 = RE::hkVector4(0, 0, 1, 0);
 			identityTransform.translation = RE::hkVector4(0, 0, 0, 1);
 
-			REL::Relocation<RE::hkpSimpleShapePhantom* (*)(RE::hkpShapePhantom*, RE::hkpShape*, const RE::hkTransform&, std::uint32_t)> constructPhantom{ RELOCATION_ID(60675, 61535) };
-			auto* constructed = constructPhantom(storage, static_cast<RE::hkpShape*>(shape->referencedObject.get()), identityTransform, 0);
+			auto* constructed = RE::ConstructSimpleShapePhantom(storage, static_cast<RE::hkpShape*>(shape->referencedObject.get()), identityTransform, 0);
 			if (!constructed) {
 				RE::hkMemoryRouter::GetInstance().Heap->BlockFree(storage, sizeof(RE::hkpSimpleShapePhantom));
 				return false;
@@ -397,38 +550,178 @@ namespace GrassControl
 
 	void PhysicsRaycast::SetQueriesDisabled(bool disabled)
 	{
-		std::scoped_lock lock(queryMutex);
+		std::scoped_lock lock(queryMutex, pendingMutex);
+
+		if (disabled && !queriesDisabled)
+			pendingCells.clear();
 
 		queriesDisabled = disabled;
+		if (disabled) {
+			std::scoped_lock cacheLock(shapeCache.mutex);
+			shapeCache.snapshots.clear();
+			shapeCache.snapshotsTaken = std::chrono::steady_clock::now();
+		}
+
 		resources.Reset();
-		errors = 0;
+		resources.errors = 0;
 		warningPending = false;
+	}
+
+	bool PhysicsRaycast::CanFilterCell(const RE::TESObjectCELL& cell)
+	{
+		std::shared_lock lock(queryMutex);
+
+		if (queriesDisabled || !CellHasCollision(cell))
+			return false;
+
+		// Wait for neighboring cells whose collision can extend into this cell, without waiting for the entire loaded grid.
+		const auto* tes = RE::TES::GetSingleton();
+		const auto* grid = tes ? tes->gridCells : nullptr;
+		const auto* coordinates = const_cast<RE::TESObjectCELL&>(cell).GetCoordinates();
+		if (!grid || !coordinates)
+			return false;
+
+		for (std::uint32_t x = 0; x < grid->length; ++x) {
+			for (std::uint32_t y = 0; y < grid->length; ++y) {
+				auto* neighbor = grid->GetCell(x, y);
+				// Slots past a worldspace's edge hold no cell and have no collision to wait for.
+				const auto* at = neighbor ? neighbor->GetCoordinates() : nullptr;
+				if (!at)
+					continue;
+				if (std::abs(at->cellX - coordinates->cellX) <= 1 && std::abs(at->cellY - coordinates->cellY) <= 1 && !CellHasCollision(*neighbor))
+					return false;
+			}
+		}
+
+		// Loaded references can still have bodies queued for addition to the Havok world.
+		RE::NiPointer<RE::bhkWorld> owner(cell.GetbhkWorld());
+		if (!owner)
+			return false;
+
+		RE::BSReadLockGuard worldLock(owner->worldLock);
+		const auto* world = owner->GetWorld1();
+		return world && !world->pendingOperationsCount && !world->pendingBodyOperationsCount && !world->criticalOperationsLockCount;
+	}
+
+	void PhysicsRaycast::DeferCell(RE::TESObjectCELL* cell)
+	{
+		if (!cell || cell->IsInteriorCell())
+			return;
+
+		std::scoped_lock lock(pendingMutex);
+
+		try {
+			pendingCells.insert(cell->formID);
+		} catch (const std::bad_alloc&) {
+			warningPending = true;
+		}
+	}
+
+	void PhysicsRaycast::RetryPendingCells()
+	{
+		auto* tes = RE::TES::GetSingleton();
+		auto* manager = RE::BGSGrassManager::GetSingleton();
+		if (!tes || !manager || manager->generateGrassDataFiles)
+			return;
+
+		// Collision arrives over several frames, so polling faster only repeats the same failed checks.
+		const auto now = std::chrono::steady_clock::now();
+		if (now - lastRetry < std::chrono::milliseconds(100))
+			return;
+
+		lastRetry = now;
+
+		if (queriesDisabled)
+			return;
+
+		std::unordered_set<RE::FormID> waiting;
+		{
+			std::scoped_lock lock(pendingMutex);
+			waiting.swap(pendingCells);
+		}
+
+		for (const auto id : waiting) {
+			auto* cell = RE::TESForm::LookupByID<RE::TESObjectCELL>(id);
+			if (!cell || cell->IsInteriorCell() || cell->GetRuntimeData().worldSpace != tes->GetRuntimeData2().worldSpace)
+				continue;
+
+			if (!Config::ExtendGrassDistance && !CanFilterCell(*cell)) {
+				DeferCell(cell);
+				continue;
+			}
+
+			bool queued = false;
+			{
+				RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
+				if (auto* task = RE::AddCellGrassTask::Get(cell->extraList)) {
+					task->Release();
+					queued = true;
+				}
+			}
+
+			if (queued || !DistantGrass::QueueGrassPlacement(cell))
+				DeferCell(cell);
+		}
+	}
+
+	void PhysicsRaycast::ThreadMemory::Send(std::uint32_t type) const
+	{
+		ThreadEvent event{ this, type };
+		RE::SendHavokThreadEvent(&event);
+	}
+
+	PhysicsRaycast::ThreadMemory::~ThreadMemory()
+	{
+		if (!started)
+			return;
+
+		// This thread's query phantom is freed through its router, so it must go before the router does.
+		resources.Reset();
+		Send(1);
+	}
+
+	bool PhysicsRaycast::EnsureThreadMemory()
+	{
+		if (const auto* router = RE::hkMemoryRouter::GetInstancePtr())
+			return router->Heap != nullptr;
+
+		// The Havok handler accepts paired BSThread start and exit events for non-engine threads.
+		// The opaque thread key must match across both events; the receiver is unused.
+		// Construct query storage first so ThreadMemory can reset it before either thread-local object is destroyed.
+		resources.Reset();
+		static thread_local ThreadMemory memory;
+		if (!memory.started) {
+			memory.Send(0);
+			memory.started = true;
+		}
+
+		const auto* router = RE::hkMemoryRouter::GetInstancePtr();
+		return router && router->Heap;
 	}
 
 	void PhysicsRaycast::ReportAllocationFailure()
 	{
-		std::scoped_lock lock(queryMutex);
-
 		warningPending = true;
+	}
+
+	void PhysicsRaycast::ReportStatistics()
+	{
+		std::scoped_lock lock(pendingMutex);
+
+		logger::info("Physics queries: completed {}, with blockers {}, unavailable {}, invalid {}, failed {}; pending first placements {}, queries disabled {}; last unavailable: {}", queryCounts[0].load(), queriesWithHits.load(), queryCounts[1].load(), queryCounts[2].load(), queryCounts[3].load(), pendingCells.size(), queriesDisabled.load(), lastUnavailableReason.load());
 	}
 
 	void PhysicsRaycast::Update()
 	{
-		bool warn = false;
+		RetryPendingCells();
 
-		{
-			std::scoped_lock lock(queryMutex);
-
-			warn = std::exchange(warningPending, false);
-		}
-
-		if (warn && Config::RayCastError)
+		if (warningPending.exchange(false) && Config::RayCastError)
 			RE::DebugMessageBox("NGIO could not complete repeated physics queries. Grass placement used its fallback behavior. See the NGIO log for the affected cell and query status.");
 	}
 
 	std::optional<PhysicsRaycast::ShapeNames> PhysicsRaycast::GetShapeNames(RE::ObjectRefHandle handle, RE::NiPoint3 position)
 	{
-		std::scoped_lock lock(queryMutex);
+		std::shared_lock lock(queryMutex);
 
 		if (queriesDisabled)
 			return std::nullopt;
@@ -441,19 +734,42 @@ namespace GrassControl
 		if (!cell || !cell->IsAttached())
 			return std::nullopt;
 
-		auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
-		if (!renderer)
-			return std::nullopt;
+		std::shared_ptr<const Util::ShapeSnapshot> snapshot;
+		{
+			std::scoped_lock cacheLock(shapeCache.mutex);
+			const auto now = std::chrono::steady_clock::now();
+			if (now - shapeCache.snapshotsTaken > std::chrono::seconds(2)) {
+				shapeCache.snapshots.clear();
+				shapeCache.snapshotsTaken = now;
+			}
 
-		renderer->Lock();
-		const SKSE::stl::scope_exit rendererLock([renderer] { renderer->Unlock(); });
+			if (const auto it = shapeCache.snapshots.find(handle.native_handle()); it != shapeCache.snapshots.end())
+				snapshot = it->second;
+		}
 
-		RE::NiPointer<RE::NiAVObject> root(reference->Get3D());
-		if (!root)
-			return std::nullopt;
+		if (!snapshot) {
+			auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
+			if (!renderer)
+				return std::nullopt;
 
-		if (auto shape = Util::ClosestShape(root.get(), position))
-			return ShapeNames{ std::move(*shape), root->name.c_str() };
+			std::optional<Util::ShapeSnapshot> captured;
+			{
+				renderer->Lock();
+				const SKSE::stl::scope_exit rendererLock([renderer] { renderer->Unlock(); });
+
+				RE::NiPointer<RE::NiAVObject> root(reference->Get3D());
+				if (root)
+					captured = Util::CaptureShapes(root.get());
+			}
+
+			// A failed capture is cached too, so a missing or oversized model is not walked again for every candidate.
+			snapshot = captured ? std::make_shared<const Util::ShapeSnapshot>(std::move(*captured)) : std::make_shared<const Util::ShapeSnapshot>();
+			std::scoped_lock cacheLock(shapeCache.mutex);
+			shapeCache.snapshots.try_emplace(handle.native_handle(), snapshot);
+		}
+
+		if (const auto* shape = Util::ClosestShape(*snapshot, position))
+			return ShapeNames{ shape->name, snapshot->root };
 
 		return std::nullopt;
 	}

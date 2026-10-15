@@ -4,7 +4,6 @@ namespace GrassControl
 {
 	struct CliffObject
 	{
-		const bool isSteep;
 		const std::unordered_set<std::string> allowedShapes;
 		const std::unordered_set<std::string> blockedShapes;
 	};
@@ -13,9 +12,9 @@ namespace GrassControl
 	{
 		const std::unordered_set<std::string> ignoredShapes;
 	};
-}
 
-namespace GrassControl::ObjectHandler
-{
-	void LoadObjectConfigs(std::unordered_map<RE::FormID, CliffObject>& cliffObjects, std::unordered_map<RE::FormID, PartIgnoredObject>& partIgnoredObjects);
+	namespace ObjectHandler
+	{
+		void LoadObjectConfigs(std::unordered_map<RE::FormID, CliffObject>& cliffObjects, std::unordered_map<RE::FormID, PartIgnoredObject>& partIgnoredObjects);
+	}
 }

@@ -1,18 +1,16 @@
 #include "GrassControl/ObjectHandler.h"
 #include "GrassControl/Util.h"
 
-namespace
+namespace GrassControl::ObjectHandler
 {
-	using namespace GrassControl;
-
-	std::optional<RE::FormID> ParseObjectKey(const char* key, const std::string& settingName, std::vector<std::string>& parts)
+	static std::optional<RE::FormID> ParseObjectKey(const char* key, const std::string& settingName, std::vector<std::string>& parts)
 	{
 		parts = clib_util::string::split(key, "|");
 		if (parts.empty())
 			return std::nullopt;
 
 		for (auto& part : parts)
-			part = Util::StringHelpers::trim(part);
+			part = Util::StringHelpers::Trim(part);
 
 		const auto forms = Util::CachedFormList::TryParse(parts.front(), settingName);
 		if (forms->Empty()) {
@@ -25,7 +23,7 @@ namespace
 		return formID;
 	}
 
-	void AddCliffObjects(CSimpleIniA::TNamesDepend& values, std::unordered_map<RE::FormID, CliffObject>& cliffObjects)
+	static void AddCliffObjects(CSimpleIniA::TNamesDepend& values, std::unordered_map<RE::FormID, CliffObject>& cliffObjects)
 	{
 		for (const auto& key : values) {
 			std::vector<std::string> splitKey;
@@ -36,24 +34,23 @@ namespace
 			std::unordered_set<std::string> allowedShapes;
 			std::unordered_set<std::string> blockedShapes;
 
-			bool steep = false;
-
 			for (auto& str : splitKey) {
 				if (str.contains("~")) {
 					std::erase(str, '~');
 					blockedShapes.insert(str);
 				} else if (str.contains("Steep") || str.contains("steep")) {
-					steep = true;
+					// Steep classifies the cliff; it is not a shape name.
+					continue;
 				} else {
 					allowedShapes.insert(str);
 				}
 			}
 
-			cliffObjects.try_emplace(*formID, steep, std::move(allowedShapes), std::move(blockedShapes));
+			cliffObjects.try_emplace(*formID, std::move(allowedShapes), std::move(blockedShapes));
 		}
 	}
 
-	void AddPartIgnoredObjects(CSimpleIniA::TNamesDepend& values, std::unordered_map<RE::FormID, PartIgnoredObject>& partIgnoredObjects)
+	static void AddPartIgnoredObjects(CSimpleIniA::TNamesDepend& values, std::unordered_map<RE::FormID, PartIgnoredObject>& partIgnoredObjects)
 	{
 		for (const auto& key : values) {
 			std::vector<std::string> splitKey;
@@ -64,10 +61,7 @@ namespace
 			partIgnoredObjects.try_emplace(*formID, std::unordered_set<std::string>(splitKey.begin(), splitKey.end()));
 		}
 	}
-}
 
-namespace GrassControl::ObjectHandler
-{
 	void LoadObjectConfigs(std::unordered_map<RE::FormID, CliffObject>& cliffObjects, std::unordered_map<RE::FormID, PartIgnoredObject>& partIgnoredObjects)
 	{
 		const auto configs = Util::Files::ObjectConfigs();
@@ -91,6 +85,11 @@ namespace GrassControl::ObjectHandler
 			std::error_code error;
 			if (!Util::Files::ReadText(config, contents, error)) {
 				logger::error("Failed to read object config: {}", error.message());
+				continue;
+			}
+
+			if (contents.find('\0') != std::string::npos) {
+				logger::error("Object config contains NUL bytes: {}", Util::Files::PathForLog(config));
 				continue;
 			}
 

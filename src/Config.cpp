@@ -94,7 +94,7 @@ namespace GrassControl::Config
 			else if constexpr (std::is_same_v<T, double>)
 				*value = ini.GetDoubleValue(entry.section, entry.key);
 			else
-				*value = Util::StringHelpers::trim(ini.GetValue(entry.section, entry.key));
+				*value = Util::StringHelpers::Trim(ini.GetValue(entry.section, entry.key));
 		},
 			entry.value);
 	}

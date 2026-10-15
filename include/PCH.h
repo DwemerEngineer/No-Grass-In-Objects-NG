@@ -9,17 +9,19 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <climits>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iterator>
-#include <list>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -27,6 +29,7 @@
 #include <optional>
 #include <ranges>
 #include <set>
+#include <shared_mutex>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -53,13 +56,21 @@
 
 #include "Version.h"
 
-#include <Windows.h>
+#include <DirectXPackedVector.h>
+
+#include <oneapi/tbb/global_control.h>
+#include <oneapi/tbb/info.h>
+#include <oneapi/tbb/parallel_for.h>
+#include <oneapi/tbb/task_arena.h>
+#include <oneapi/tbb/task_group.h>
+#include <oneapi/tbb/task_scheduler_observer.h>
 
 #include <CLibUtil/String.hpp>
 #include <CasualLibrary.hpp>
 #include <SimpleIni.h>
 #include <xbyak/xbyak.h>
 
+#include <fmt/ranges.h>
 #include <spdlog/sinks/basic_file_sink.h>
 
 namespace logger = SKSE::log;
