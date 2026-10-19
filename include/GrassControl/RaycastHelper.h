@@ -37,10 +37,8 @@ namespace GrassControl
 
 		bool IsCliff(RE::FormID formID) const;
 
-		/** @brief True when the object's _NGIO CliffObjects entry names shapes, so only some of its shapes are cliffs. */
 		bool HasCliffShapeRule(RE::FormID formID) const;
 
-		/** @brief True when the hit lands on a cliff shape: any shape of a listed cliff, or an allowed shape of a shape-filtered one. */
 		bool IsCliffAt(RE::FormID formID, RE::ObjectRefHandle reference, const RE::NiPoint3& point) const;
 
 		// Checks collision only; callers apply texture filtering separately.

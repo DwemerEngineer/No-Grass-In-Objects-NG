@@ -83,7 +83,7 @@ namespace GrassControl
 				const auto started = std::chrono::steady_clock::now();
 				GrassPatchCreation::AddCell(manager, cell, abort, func.get());
 				if (Config::GeneratingCache)
-					Generation::OnGrassCreated(*abort ? nullptr : cell, std::chrono::steady_clock::now() - started);
+					Generation::OnGrassCreated(cell, abort, std::chrono::steady_clock::now() - started);
 			}
 
 			inline static REL::Relocation<decltype(thunk)> func;
@@ -115,8 +115,7 @@ namespace GrassControl
 				if (REL::Module::IsVR())
 					OverrideSetting("bLoadVRPlayroom:VR", false);
 
-				// Large references load 3D across the whole large-ref grid on every move, but grass is only cached for the loaded grid.
-				// The engine enables them only while uLargeRefLODGridSize exceeds uGridsToLoad.
+				// Matching uGridsToLoad disables large-reference loading beyond the grid being cached.
 				OverrideSetting("uLargeRefLODGridSize:General", globals::GridsToLoad());
 
 				Generation::ApplyPatches();
@@ -298,7 +297,9 @@ namespace GrassControl
 			stl::write_thunk_call<ClearUnloadTask>(RELOCATION_ID(18655, 19130).address() + REL::Relocate(0xC8, 0xCA));
 
 			{
-				const auto addr = RELOCATION_ID(18137, 18527).address() + REL::Relocate(0x17, 0x25);
+				const auto worker = RELOCATION_ID(18137, 18527).address();
+				// AE gates coordinate tasks to a separate branch before the cell call, so the hook replaces that gate.
+				const auto addr = worker + REL::Relocate(0x17, 0x1B);
 
 				struct CellLoadDispatchPatch : CodeGenerator
 				{
@@ -308,7 +309,8 @@ namespace GrassControl
 						Label invalidMethod;
 						Label retnLabel;
 						Label completeTask;
-						Label resolveNormalCell;
+						Label loadCoordinates;
+						Label coordinateTarget;
 
 						Label checkNormalLoad;
 						Label resolveCell;
@@ -325,7 +327,7 @@ namespace GrassControl
 						call(ptr[rip + loadCustomCell]);  // LoadDistantCellNow(worldSpace, x, y);
 						add(rsp, 0x20);
 
-						jmp(ptr[rip + completeTask]);  // Finish the task without the normal load or its cell call.
+						jmp(ptr[rip + completeTask]);  // Custom tasks have no cell pointer for the native load.
 
 						L(checkNormalLoad);
 						cmp(al, 0);
@@ -339,13 +341,20 @@ namespace GrassControl
 
 						L(resolveCell);
 						if (REL::Module::IsAE()) {
-							call(ptr[rip + resolveNormalCell]);
+							cmp(byte[rbx + a_rbxWorldSpaceOffset + 0x1C], 0);  // The replaced gate: task->isCell.
+							je(loadCoordinates);
 						} else {
 							mov(rcx, ptr[rbx + a_rbxWorldSpaceOffset - 0x8]);  // loadTask
 							lea(rdx, ptr[rbx + a_rbxWorldSpaceOffset]);        // &task->worldSpace
 						}
 
 						jmp(ptr[rip + retnLabel]);
+						if (REL::Module::IsAE()) {
+							L(loadCoordinates);
+							jmp(ptr[rip + coordinateTarget]);
+							L(coordinateTarget);
+							dq(a_targetReturn + 0xB);  // Native coordinate branch skips the direct-load instructions.
+						}
 
 						L(loadCustomCell);
 						dq(a_func);
@@ -356,20 +365,19 @@ namespace GrassControl
 						L(retnLabel);
 						dq(a_targetReturn);
 
-						L(resolveNormalCell);
-						dq(RELOCATION_ID(18637, 19111).address());
-
 						L(completeTask);
 						dq(a_targetSkip);
 					}
 				};
 
-				// Custom loads have no cell pointer for the call at +0x166; resume at the task completion store.
-				CellLoadDispatchPatch patch(reinterpret_cast<std::uintptr_t>(LoadDistantCellNow), reinterpret_cast<std::uintptr_t>(ThrowOurMethodException), REL::Relocate(0x20, 0x20, 0x28), addr + REL::Relocate(0x8, 0x5), addr + REL::Relocate(0x8 + (0xA9 - 0x8F), 0x146));
+				CellLoadDispatchPatch patch(reinterpret_cast<std::uintptr_t>(LoadDistantCellNow), reinterpret_cast<std::uintptr_t>(ThrowOurMethodException), REL::Relocate(0x20, 0x20, 0x28), worker + REL::Relocate(0x1F, 0x21), worker + REL::Relocate(0x39, 0x16B));
 				patch.ready();
-				if (!REL::Module::IsAE())
+				if (REL::Module::IsAE()) {
+					trampoline.write_branch<6>(addr, trampoline.allocate(patch));
+				} else {
 					REL::safe_write(addr + 5, REL::NOP3, 3);
-				trampoline.write_branch<5>(addr, trampoline.allocate(patch));
+					trampoline.write_branch<5>(addr, trampoline.allocate(patch));
+				}
 			}
 
 			{

@@ -2,6 +2,8 @@
 
 namespace GrassControl::DistantGrass
 {
+	class CellHolder;
+
 	class GrassWorkers
 	{
 	public:
@@ -11,12 +13,13 @@ namespace GrassControl::DistantGrass
 		~GrassWorkers();
 
 		// Cells sharing engine grass shapes must not build concurrently.
-		void AcquireBlock(const RE::TESObjectCELL* cell);
+		std::int64_t AcquireBlock(const RE::TESObjectCELL* cell);
 
-		void ReleaseBlock(const RE::TESObjectCELL* cell);
+		// The captured key remains valid if cancellation unloads the cell before release.
+		void ReleaseBlock(std::int64_t block);
 
-		// Retains the native task so its abort flag remains valid until the job finishes.
-		bool Submit(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, bool* abort);
+		// Success retains the task and releases the holder before dispatch; failure leaves the cell held.
+		bool Submit(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, bool* abort, CellHolder& holder);
 
 		[[nodiscard]] bool Busy();
 
@@ -34,15 +37,11 @@ namespace GrassControl::DistantGrass
 
 		std::int64_t GrassBlockOf(const RE::TESObjectCELL* cell) const;
 
-		// Release under the queue lock to prevent missed work when every block was busy.
-		void ReleaseBlock(std::int64_t block);
-
 		// Caller holds mutex; reserves the nearest available block.
 		std::optional<Job> Take();
 
 		bool Dispatch();
 
-		// Takes the next job, or ends the calling callback when none can run.
 		std::optional<Job> Next();
 		void Run(const Job& job);
 		void DeferUnbuilt(const Job& job);
@@ -61,8 +60,7 @@ namespace GrassControl::DistantGrass
 		oneapi::tbb::task_group tasks{ context };
 	};
 
-	// Prefetch models to reduce serial model and texture IO inside LoadGrassType's grass manager lock.
-	// Model streams require serial loads under the grass manager lock.
+	// Model prefetch shares the grass manager lock with LoadGrassType because model streams cannot load concurrently.
 	class GrassModelPrefetch
 	{
 	public:

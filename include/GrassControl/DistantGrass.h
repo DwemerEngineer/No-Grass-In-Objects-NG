@@ -2,6 +2,79 @@
 
 namespace GrassControl::DistantGrass
 {
+	// Cell destruction must also wait for callers that have not acquired grassCreateLock yet.
+	class CellHoldCount final
+	{
+	public:
+		bool TryHold()
+		{
+			auto value = state.load(std::memory_order_acquire);
+			do {
+				if ((value & Destroying) || (value & Holders) == Holders)
+					return false;
+			} while (!state.compare_exchange_weak(value, value + 1, std::memory_order_acq_rel, std::memory_order_acquire));
+			return true;
+		}
+
+		void Release()
+		{
+			if ((state.fetch_sub(1, std::memory_order_release) & Holders) == 1)
+				state.notify_all();
+		}
+
+		void BeginDestruction() { state.fetch_or(Destroying, std::memory_order_acq_rel); }
+
+		bool IsBeingDestroyed() const { return (state.load(std::memory_order_acquire) & Destroying) != 0; }
+
+		// Call after BeginDestruction, without holding the map, task or placement lock.
+		void WaitUntilReleased() const
+		{
+			auto value = state.load(std::memory_order_acquire);
+			while (value & Holders) {
+				state.wait(value, std::memory_order_acquire);
+				value = state.load(std::memory_order_acquire);
+			}
+		}
+
+	private:
+		inline static constexpr std::uint32_t Destroying = std::uint32_t{ 1 } << 31;
+		inline static constexpr std::uint32_t Holders = Destroying - 1;
+		std::atomic<std::uint32_t> state{ 0 };
+	};
+
+	class CellHolder final
+	{
+	public:
+		CellHolder() = default;
+		explicit CellHolder(std::shared_ptr<CellHoldCount> count)
+		{
+			if (count && count->TryHold())
+				holds = std::move(count);
+		}
+		CellHolder(const CellHolder&) = delete;
+		CellHolder& operator=(const CellHolder&) = delete;
+		CellHolder(CellHolder&& other) noexcept : holds(std::move(other.holds)) {}
+		CellHolder& operator=(CellHolder&& other) noexcept
+		{
+			if (this != &other) {
+				Release();
+				holds = std::move(other.holds);
+			}
+			return *this;
+		}
+		~CellHolder() { Release(); }
+		explicit operator bool() const { return holds != nullptr; }
+
+	private:
+		void Release()
+		{
+			if (auto count = std::move(holds))
+				count->Release();
+		}
+
+		std::shared_ptr<CellHoldCount> holds;
+	};
+
 	// One directory scan replaces a filesystem probe for every distant cell.
 	class GrassCacheIndex final
 	{
@@ -54,15 +127,17 @@ namespace GrassControl::DistantGrass
 		GrassState have = GrassState::None;
 		GrassState wanted = GrassState::None;
 		bool queued = false;
+		std::uint64_t taskGeneration = 0;
 
 		std::atomic<TerrainLoad> terrainLoad{ TerrainLoad::None };
-		// Cancellation clears terrainLoad before the terrain worker has returned.
+		// Stays set until a running terrain worker has returned.
 		std::atomic<bool> loadingTerrain{ false };
 
 		bool AdvanceTerrain(TerrainLoad from, TerrainLoad to);
 
 		void ClearTask()
 		{
+			++taskGeneration;
 			queued = false;
 			wanted = GrassState::None;
 		}
@@ -71,7 +146,8 @@ namespace GrassControl::DistantGrass
 		{
 			ClearTask();
 			have = GrassState::None;
-			terrainLoad = TerrainLoad::None;
+			if (AdvanceTerrain(TerrainLoad::Queued, TerrainLoad::None) || AdvanceTerrain(TerrainLoad::Claimed, TerrainLoad::None))
+				loadingTerrain = false;
 		}
 
 		[[nodiscard]] bool HasCacheFile(std::string_view world) const;
@@ -102,6 +178,7 @@ namespace GrassControl::DistantGrass
 		inline static constexpr auto DistantStreamBudget = std::chrono::microseconds(1000);
 		// Engine tasks can be dropped without our callback, which would otherwise hold a slot forever.
 		inline static constexpr auto DistantCellTimeout = std::chrono::seconds(10);
+		inline static constexpr auto DistantRetryDelay = std::chrono::seconds(1);
 
 		std::vector<std::shared_ptr<CellInfo>> grid;
 		std::vector<std::pair<int, int>> pendingCells;
@@ -110,6 +187,7 @@ namespace GrassControl::DistantGrass
 		RE::TESWorldSpace* pendingWorld = nullptr;
 		int pendingX = 0;
 		int pendingY = 0;
+		std::chrono::steady_clock::time_point nextRetry{};
 	};
 
 	// Stand-in cells let cache-only mode load grass without loading real cells or generating placements.
@@ -119,10 +197,8 @@ namespace GrassControl::DistantGrass
 		// addType -1 unloads every cell regardless of radius.
 		void Retain(const RE::TESWorldSpace* world, int addType, int centerX, int centerY, int radius);
 
-		// Returns true only when a load was queued.
 		bool QueueLoad(RE::TESWorldSpace* world, int x, int y);
 
-		// The engine task supplies the stand-in cell.
 		void Load(RE::TESObjectCELL* cell);
 
 		// Main thread only; grass must already be removed.
@@ -158,11 +234,21 @@ namespace GrassControl::DistantGrass
 	{
 	public:
 		std::recursive_mutex cellMapMutex;
-		std::atomic<bool> gridUpdatePending{ false };
+		// Initial exterior attachment need not call TES's separate grass-enable function.
+		std::atomic<bool> gridUpdatePending{ true };
 		std::atomic<bool> streamingAllowed{ false };
-		std::atomic<bool> gridUpdatesEnabled{ false };
+		std::atomic<bool> gridUpdatesEnabled{ true };
+
+		void SuspendForLoad()
+		{
+			streamingAllowed = false;
+			gridUpdatePending = true;
+			// Loading pauses streaming; only the explicit disable hook changes the user's toggle.
+		}
 		std::unique_ptr<CellInfoContainer> cellGrid;
 		std::unique_ptr<CacheOnlyCells> cacheOnlyCells;
+		// Entries survive grid eviction until the cell destructor has waited for their holders.
+		std::unordered_map<RE::TESObjectCELL*, std::shared_ptr<CellHoldCount>> cellHolds{ 1024 };
 		int grassGridRadius = -1;
 		GrassCacheIndex cacheIndex;
 	};
@@ -180,7 +266,10 @@ namespace GrassControl::DistantGrass
 
 	int GetGrassGridRadius();
 
-	bool ClearCellAddGrassTask(RE::TESObjectCELL* cell);
+	bool ClearCellAddGrassTask(RE::TESObjectCELL* cell, const bool* taskAbort = nullptr);
+
+	// Look up tracking by address before dereferencing a cell that may be undergoing destruction.
+	CellHolder TryHoldTrackedCell(RE::TESObjectCELL* cell);
 
 	void RemoveCellGrass(RE::TESObjectCELL* cell);
 
@@ -203,7 +292,7 @@ namespace GrassControl::DistantGrass
 	// Caller holds gridState.cellMapMutex; returns false if a task is already queued.
 	bool PrepareGrassTask(const std::shared_ptr<CellInfo>& info, RE::TESObjectCELL* cell, GrassState wanted);
 
-	// Queue the visible center before spending time preparing the outer rings.
+	// Visit the center first so nearby grass takes priority over the outer rings.
 	template <class F>
 	void ForEachGrassCell(int centerX, int centerY, int radius, F&& visit)
 	{

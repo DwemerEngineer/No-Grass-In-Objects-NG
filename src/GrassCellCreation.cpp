@@ -18,7 +18,8 @@ namespace GrassControl::DistantGrass
 
 	static bool UseGrassWorkers(const RE::BGSGrassManager* manager, RE::TESObjectCELL* cell)
 	{
-		return Config::ThreadedGrassPlacement && !Config::OnlyLoadFromCache && manager && !manager->generateGrassDataFiles && !Config::GeneratingCache &&
+		// Cell workers require extended-grid tracking; ordinary retries use the native task queue.
+		return gridState.cellGrid && Config::ThreadedGrassPlacement && !Config::OnlyLoadFromCache && manager && !manager->generateGrassDataFiles && !Config::GeneratingCache &&
 		       cell && cell->GetCoordinates();
 	}
 
@@ -59,46 +60,52 @@ namespace GrassControl::DistantGrass
 
 	static void UpdateCellGrass(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, bool* abort)
 	{
+		const auto holder = TryHoldTrackedCell(cell);
+		if (!holder)
+			return;
+
 		std::unique_lock lock(gridState.cellMapMutex);
-		// RemoveCellGrass aborts under this lock before the cell is destroyed.
 		if (*abort)
 			return;
 
 		const auto info = gridState.cellGrid ? gridState.cellGrid->FindByCell(cell) : nullptr;
 		if (!info) {
-			ClearCellAddGrassTask(cell);
+			lock.unlock();
+			ClearCellAddGrassTask(cell, abort);
 			return;
 		}
 
 		const auto have = info->have;
 		const auto wanted = info->wanted;
+		const auto generation = info->taskGeneration;
 		if (wanted == GrassState::None || have == wanted || have == GrassState::Active || *abort || !IsValidLoadedCell(cell, wanted == GrassState::Active)) {
 			info->ClearTask();
-			ClearCellAddGrassTask(cell);
+			lock.unlock();
+			ClearCellAddGrassTask(cell, abort);
 			return;
 		}
 
-		// Record the filtering actually completed so unavailable collision leaves the cell eligible for retry.
 		const auto* world = cell->GetRuntimeData().worldSpace;
 		const bool fromCache = globals::AllowLoadGrass() && world && info->HasCacheFile(world->editorID.c_str());
 		const bool requireCollision = wanted == GrassState::Active && GrassPatchCreation::NeedsCollision(manager, fromCache);
-		GrassPatchCreation patchCreation(cell, abort);
-		if (!patchCreation.PrepareCell(requireCollision)) {
-			info->ClearTask();
-			PhysicsRaycast::GetSingleton().DeferCell(cell);
-			ClearCellAddGrassTask(cell);
-			return;
-		}
-
 		// Native placement can enter the loader while its callbacks need the map lock.
 		lock.unlock();
 		RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
 		lock.lock();
-		if (!gridState.cellGrid || gridState.cellGrid->FindByCell(cell) != info || info->cell != cell || *abort) {
-			if (info->cell == cell)
+		if (!gridState.cellGrid || gridState.cellGrid->FindByCell(cell) != info || info->cell != cell || info->taskGeneration != generation || *abort) {
+			if (info->cell == cell && info->taskGeneration == generation)
 				info->ClearTask();
 
-			ClearCellAddGrassTask(cell);
+			lock.unlock();
+			ClearCellAddGrassTask(cell, abort);
+			return;
+		}
+		GrassPatchCreation patchCreation(cell, abort);
+		if (!patchCreation.PrepareCell(requireCollision)) {
+			info->ClearTask();
+			lock.unlock();
+			PhysicsRaycast::GetSingleton().DeferCell(cell);
+			ClearCellAddGrassTask(cell, abort);
 			return;
 		}
 		lock.unlock();
@@ -128,7 +135,7 @@ namespace GrassControl::DistantGrass
 		// Collision that vanished mid-placement left some grass unfiltered; keep the cell replaceable and retry it.
 		const bool unfiltered = requireCollision && PhysicsRaycast::UnavailableQueries() != unavailableBefore;
 		lock.lock();
-		if (info->cell == cell) {
+		if (info->cell == cell && info->taskGeneration == generation) {
 			info->ClearTask();
 			info->have = *abort ? have : unfiltered ? GrassState::Lod :
 			                                          wanted;
@@ -141,7 +148,6 @@ namespace GrassControl::DistantGrass
 
 	static void BuildCellGrass(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, bool* abort)
 	{
-		// Unloading a cell sets the abort flag before freeing it, so a queued job must not touch an aborted cell.
 		if (*abort)
 			return;
 
@@ -160,8 +166,7 @@ namespace GrassControl::DistantGrass
 		RE::AddCellGrassTask::FromAbort(abort)->DecRefCount();
 	}
 
-	// A shape's begin/add/done sequence uses thread-local staging storage and cannot overlap another build.
-	// Native placement shares shapes per 12x12 block; CellSelection gives hooked placement separate shapes per cell.
+	// A shape's staging buffer belongs to the thread that starts it, so builds sharing a shape must not overlap.
 	std::int64_t GrassWorkers::GrassBlockOf(const RE::TESObjectCELL* cell) const
 	{
 		const auto* coordinates = cell ? const_cast<RE::TESObjectCELL*>(cell)->GetCoordinates() : nullptr;
@@ -224,7 +229,7 @@ namespace GrassControl::DistantGrass
 			Work();
 	}
 
-	bool GrassWorkers::Submit(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, bool* abort)
+	bool GrassWorkers::Submit(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, bool* abort, CellHolder& holder)
 	{
 		const auto* coordinates = cell->GetCoordinates();
 		if (!coordinates)
@@ -252,6 +257,8 @@ namespace GrassControl::DistantGrass
 			return false;
 		}
 
+		// Inline work can enter the loader; it must not keep the submitting cell held while streaming other cells.
+		holder = {};
 		if (runInline)
 			Work();
 
@@ -337,18 +344,25 @@ namespace GrassControl::DistantGrass
 			DeferUnbuilt(job);
 	}
 
-	// Leaves the cell as LOD grass and retries it once memory is available.
+	// Keep the last completed state; a failed first build has no LOD grass to retain.
 	void GrassWorkers::DeferUnbuilt(const Job& job)
 	{
-		{
-			std::scoped_lock lock(gridState.cellMapMutex);
-			if (const auto info = gridState.cellGrid ? gridState.cellGrid->FindByCell(job.cell) : nullptr) {
-				info->ClearTask();
-				info->have = GrassState::Lod;
-			}
-		}
+		const auto holder = TryHoldTrackedCell(job.cell);
+		if (!holder)
+			return;
 
-		ClearCellAddGrassTask(job.cell);
+		std::unique_lock lock(gridState.cellMapMutex);
+		if (*job.abort)
+			return;
+
+		const auto info = gridState.cellGrid ? gridState.cellGrid->FindByCell(job.cell) : nullptr;
+		if (!info || info->cell != job.cell)
+			return;
+
+		info->ClearTask();
+		gridState.cellGrid->RetryDistantCell(info->x, info->y);
+		lock.unlock();
+		ClearCellAddGrassTask(job.cell, job.abort);
 		auto& physics = PhysicsRaycast::GetSingleton();
 		physics.DeferCell(job.cell);
 		physics.ReportAllocationFailure();
@@ -367,17 +381,13 @@ namespace GrassControl::DistantGrass
 		}
 	}
 
-	void GrassWorkers::AcquireBlock(const RE::TESObjectCELL* cell)
+	std::int64_t GrassWorkers::AcquireBlock(const RE::TESObjectCELL* cell)
 	{
 		const auto block = GrassBlockOf(cell);
 		std::unique_lock lock(blockMutex);
 		blockReleased.wait(lock, [&] { return !busyBlocks.contains(block); });
 		busyBlocks.insert(block);
-	}
-
-	void GrassWorkers::ReleaseBlock(const RE::TESObjectCELL* cell)
-	{
-		ReleaseBlock(GrassBlockOf(cell));
+		return block;
 	}
 
 	GrassModelPrefetch& GrassModelPrefetch::Get()
@@ -558,7 +568,6 @@ namespace GrassControl::DistantGrass
 		ReplaceGrassHandles(RE::BGSGrassManager::GetSingleton(), cell, {}, retired.entries);
 	}
 
-	// Runs on the main thread, where the engine advances grass fade alphas.
 	void RetireReplacedGrass()
 	{
 		auto& state = State();
@@ -571,6 +580,7 @@ namespace GrassControl::DistantGrass
 
 		const auto now = std::chrono::steady_clock::now();
 		for (auto* cell : cells) {
+			CellHolder holder;
 			{
 				// A cell with a queued or running grass task still owns its lists.
 				std::unique_lock lock(gridState.cellMapMutex, std::try_to_lock);
@@ -578,6 +588,9 @@ namespace GrassControl::DistantGrass
 					return;
 				const auto info = gridState.cellGrid ? gridState.cellGrid->FindByCell(cell) : nullptr;
 				if (!info || info->cell != cell || info->queued)
+					continue;
+				holder = TryHoldTrackedCell(cell);
+				if (!holder)
 					continue;
 			}
 
@@ -620,8 +633,16 @@ namespace GrassControl::DistantGrass
 
 	void QueueGrassCreation(RE::TESObjectCELL* cell)
 	{
+		CellHolder holder;
+		if (gridState.cellGrid) {
+			holder = TryHoldTrackedCell(cell);
+			if (!holder)
+				return;
+		}
+
 		auto* manager = RE::BGSGrassManager::GetSingleton();
 		if (!UseGrassWorkers(manager, cell)) {
+			RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
 			RE::AddCellGrassTask::Queue(cell);
 			return;
 		}
@@ -629,17 +650,24 @@ namespace GrassControl::DistantGrass
 		GrassModelPrefetch::Get().Request(cell);
 
 		// Retain a native task for cancellation while bypassing the IOManager queue.
-		if (RE::AddCellGrassTask::Get(cell))
-			return;
+		RE::NiPointer<RE::AddCellGrassTask> task;
+		{
+			RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
+			if (RE::AddCellGrassTask::Get(cell))
+				return;
 
-		const auto task = RE::AddCellGrassTask::Create(cell);
-		if (!task)
-			return;
+			task = RE::AddCellGrassTask::Create(cell);
+			if (!task)
+				return;
 
-		RE::AddCellGrassTask::Set(cell, task.get());
-		if (!GrassWorkers::Get().Submit(manager, cell, task->Abort())) {
-			RE::AddCellGrassTask::Set(cell, nullptr);
-			RE::AddCellGrassTask::Queue(cell);
+			RE::AddCellGrassTask::Set(cell, task.get());
+		}
+		if (!GrassWorkers::Get().Submit(manager, cell, task->Abort(), holder)) {
+			RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
+			if (!*task->Abort() && RE::AddCellGrassTask::Get(cell) == task) {
+				RE::AddCellGrassTask::Set(cell, nullptr);
+				RE::AddCellGrassTask::Queue(cell);
+			}
 		}
 	}
 
@@ -654,16 +682,25 @@ namespace GrassControl::DistantGrass
 			return;
 		}
 
-		// An aborted task can outlive its cell, so the cell must not be read.
+		auto holder = TryHoldTrackedCell(cell);
+		if (!holder)
+			return;
+
 		if (abort && *abort)
 			return;
 
-		if (abort && UseGrassWorkers(manager, cell) && GrassWorkers::Get().Submit(manager, cell, abort))
-			return;
+		if (abort && UseGrassWorkers(manager, cell)) {
+			if (GrassWorkers::Get().Submit(manager, cell, abort, holder))
+				return;
+
+			if (*abort)
+				return;
+		}
 
 		auto& workers = GrassWorkers::Get();
-		workers.AcquireBlock(cell);
-		const stl::scope_exit releaseBlock([&] { workers.ReleaseBlock(cell); });
+		const auto block = workers.AcquireBlock(cell);
+		const stl::scope_exit releaseBlock([&] { workers.ReleaseBlock(block); });
+		holder = {};
 
 		bool none = false;
 		BuildCellGrass(manager, cell, abort ? abort : &none);

@@ -322,7 +322,8 @@ namespace GrassControl::Util
 
 			} else if (auto* bsShape = object->AsTriShape()) {
 				// Dynamic and skinned buffers require their own synchronization.
-				if (bsShape->GetType().get() != RE::BSGeometry::Type::kTriShape ||
+				const auto type = bsShape->GetType().get();
+				if ((type != RE::BSGeometry::Type::kTriShape && type != RE::BSGeometry::Type::kMeshLODTriShape && type != RE::BSGeometry::Type::kSubIndexTriShape) ||
 					bsShape->GetGeometryRuntimeData().skinInstance)
 					continue;
 

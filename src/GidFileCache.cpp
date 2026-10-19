@@ -1,5 +1,6 @@
 #include "GrassControl/GidFileCache.h"
 
+#include "GrassControl/AddCellGrassTask.h"
 #include "GrassControl/Config.h"
 #include "GrassControl/Engine.h"
 #include "GrassControl/Globals.h"
@@ -62,8 +63,29 @@ namespace GrassControl::Generation
 			BeginWorld();
 		}
 
-		while (pendingCount) {
-			const auto [x, y] = NextCell();
+		for (;;) {
+			std::optional<std::pair<int, int>> retry;
+			{
+				std::scoped_lock lock(mutex);
+				for (auto it = retryCells.begin(); it != retryCells.end();) {
+					const auto [x, y] = *it;
+					it = retryCells.erase(it);
+					if (x < -GridHalf || x > GridHalf || y < -GridHalf || y > GridHalf || done.contains(CellKey(worlds.back().name, x, y)))
+						continue;
+
+					retry = { x, y };
+					break;
+				}
+			}
+			if (retry && !IsPending(retry->first, retry->second)) {
+				pending[Index(retry->first, retry->second)] = true;
+				++pendingCount;
+				--doneCells;
+			}
+			if (!pendingCount)
+				break;
+
+			const auto [x, y] = retry ? *retry : NextCell();
 			if (!VisitCell(x, y)) {
 				Clear(x, y, true);
 				continue;
@@ -103,6 +125,12 @@ namespace GrassControl::Generation
 	void CacheGenerator::MarkCell(std::string_view world, int x, int y)
 	{
 		MarkDone(CellKey(world, x, y));
+	}
+
+	void CacheGenerator::RetryCell(int x, int y)
+	{
+		std::scoped_lock lock(mutex);
+		retryCells.emplace(x, y);
 	}
 
 	void CacheGenerator::Prepare()
@@ -320,12 +348,16 @@ namespace GrassControl::Generation
 		progressFile << key << std::endl;
 		if (!progressFile)
 			stl::report_and_fail("Unable to save grass generation progress.");
+
+		lastActivity = GetTickCount64();
 	}
 
 	static void RunFreezeCheck()
 	{
 		while (runState == RunState::Running) {
-			if (GetTickCount64() - lastActivity.load() < static_cast<std::uint64_t>(Config::FreezeTime)) {
+			const auto last = lastActivity.load();
+			const auto now = GetTickCount64();
+			if (now - last < static_cast<std::uint64_t>(Config::FreezeTime)) {
 				std::this_thread::sleep_for(std::chrono::seconds(1));
 				continue;
 			}
@@ -377,7 +409,7 @@ namespace GrassControl::Generation
 		awaitingDispatch = false;
 	}
 
-	void OnGrassCreated(RE::TESObjectCELL* cell, std::chrono::steady_clock::duration buildTime)
+	void OnGrassCreated(RE::TESObjectCELL* cell, bool* abort, std::chrono::steady_clock::duration buildTime)
 	{
 		if (!patchesApplied)
 			return;
@@ -386,13 +418,18 @@ namespace GrassControl::Generation
 		++stepBuiltCells;
 
 		// Start publishes the generator before the running state.
-		if (runState == RunState::Running && cell) {
-			const auto* world = cell->GetRuntimeData().worldSpace;
-			const auto* coordinates = cell->GetCoordinates();
-			if (world && coordinates) {
-				generator->MarkCell(world->editorID.c_str(), coordinates->cellX, coordinates->cellY);
-				std::error_code error;
-				std::filesystem::remove(Util::Files::GamePath(fmt::format("Data/Grass/{}x{:04}y{:04}.fail", world->editorID.c_str(), coordinates->cellX, coordinates->cellY)), error);
+		if (runState == RunState::Running) {
+			if (*abort) {
+				const auto& task = RE::AddCellGrassTask::FromAbort(abort)->GetRuntimeData();
+				generator->RetryCell(task.cellX, task.cellY);
+			} else if (cell) {
+				const auto* world = cell->GetRuntimeData().worldSpace;
+				const auto* coordinates = cell->GetCoordinates();
+				if (world && coordinates) {
+					generator->MarkCell(world->editorID.c_str(), coordinates->cellX, coordinates->cellY);
+					std::error_code error;
+					std::filesystem::remove(Util::Files::GamePath(fmt::format("Data/Grass/{}x{:04}y{:04}.fail", world->editorID.c_str(), coordinates->cellX, coordinates->cellY)), error);
+				}
 			}
 		}
 

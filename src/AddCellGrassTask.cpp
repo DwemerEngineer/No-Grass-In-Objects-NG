@@ -28,12 +28,14 @@ namespace RE
 
 	NiPointer<AddCellGrassTask> AddCellGrassTask::Get(TESObjectCELL* cell)
 	{
+		BSSpinLockGuard taskLock(cell->grassTaskLock);
 		const auto* data = cell->extraList.GetByType<ExtraCellGrassData>();
 		return data ? data->addGrassTask : NiPointer<AddCellGrassTask>();
 	}
 
 	void AddCellGrassTask::Set(TESObjectCELL* cell, AddCellGrassTask* task)
 	{
+		BSSpinLockGuard taskLock(cell->grassTaskLock);
 		auto* data = cell->extraList.GetByType<ExtraCellGrassData>();
 		if (!data) {
 			if (!task)

@@ -14,7 +14,6 @@ namespace GrassControl::GidFileCache
 	void EnableFileGeneration();
 }
 
-// Generation moves the player to load each grid through the engine.
 namespace GrassControl::Generation
 {
 	class CacheGenerator final
@@ -24,6 +23,7 @@ namespace GrassControl::Generation
 
 		bool Step();
 		void MarkCell(std::string_view world, int x, int y);
+		void RetryCell(int x, int y);
 
 	private:
 		using ProgressSet = std::unordered_set<std::string, Util::CaseInsensitiveString::Hash, Util::CaseInsensitiveString::Equal>;
@@ -52,6 +52,8 @@ namespace GrassControl::Generation
 		mutable std::mutex mutex;
 		std::ofstream progressFile;
 		ProgressSet done;
+		// Workers record retries before decrementing queuedGrass, which keeps them associated with the current world.
+		std::set<std::pair<int, int>> retryCells;
 		std::vector<World> worlds;
 		int totalWorlds = 0;
 		int doneWorlds = 0;
@@ -80,7 +82,7 @@ namespace GrassControl::Generation
 	inline std::atomic<bool> awaitingDispatch{ false };
 	inline std::atomic<std::uint64_t> lastActivity{ 0 };
 	inline std::atomic<bool> patchesApplied{ false };
-	// Time spent building grass since the current step moved the player, to tell grass building from cell loading.
+	// Separate placement time from the total time spent loading each grid.
 	inline std::atomic<std::int64_t> stepBuildMicroseconds{ 0 };
 	inline std::atomic<int> stepBuiltCells{ 0 };
 
@@ -98,7 +100,7 @@ namespace GrassControl::Generation
 
 	void OnGrassDispatch();
 
-	void OnGrassCreated(RE::TESObjectCELL* cell, std::chrono::steady_clock::duration buildTime);
+	void OnGrassCreated(RE::TESObjectCELL* cell, bool* abort, std::chrono::steady_clock::duration buildTime);
 
 	int GetGrassGridRadius();
 }

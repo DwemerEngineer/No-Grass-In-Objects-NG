@@ -1,6 +1,5 @@
 #pragma once
 
-// Cell timings are recorded only when Profiler-report is enabled.
 namespace GrassControl::Profiler
 {
 	inline constexpr std::size_t MaxSamples = 1000;

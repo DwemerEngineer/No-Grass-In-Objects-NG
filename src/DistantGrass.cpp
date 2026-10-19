@@ -216,7 +216,9 @@ namespace GrassControl::DistantGrass
 			info->loadingTerrain = false;
 		});
 
-		if (!ws || !gridState.streamingAllowed)
+		auto* tes = RE::TES::GetSingleton();
+		if (!ws || !tes || !gridState.streamingAllowed || !gridState.gridUpdatesEnabled || tes->interiorCell ||
+			reinterpret_cast<std::uintptr_t>(tes->GetRuntimeData2().worldSpace) != ws)
 			return;
 
 		// Leave reference loading to the normal cell loader to avoid resetting NPCs.
@@ -228,7 +230,10 @@ namespace GrassControl::DistantGrass
 		{
 			std::scoped_lock lock(gridState.cellMapMutex);
 
-			auto* tes = RE::TES::GetSingleton();
+			tes = RE::TES::GetSingleton();
+			if (!tes)
+				return;
+
 			auto* world = tes->GetRuntimeData2().worldSpace;
 			if (!gridState.streamingAllowed || !gridState.gridUpdatesEnabled || tes->interiorCell || reinterpret_cast<std::uintptr_t>(world) != ws)
 				return;
@@ -242,13 +247,14 @@ namespace GrassControl::DistantGrass
 			QueueGrassCreation(cell);
 	}
 
-	bool ClearCellAddGrassTask(RE::TESObjectCELL* cell)
+	bool ClearCellAddGrassTask(RE::TESObjectCELL* cell, const bool* taskAbort)
 	{
 		if (!cell)
 			return false;
 
+		RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
 		const auto task = RE::AddCellGrassTask::Get(cell);
-		if (!task)
+		if (!task || (taskAbort && task->Abort() != taskAbort))
 			return false;
 
 		*task->Abort() = true;
@@ -262,6 +268,11 @@ namespace GrassControl::DistantGrass
 			return false;
 
 		if (quickLoad)
+			return true;
+
+		const auto* world = cell->GetRuntimeData().worldSpace;
+		const auto* coordinates = cell->GetCoordinates();
+		if (globals::AllowLoadGrass() && world && coordinates && gridState.cacheIndex.Contains(world->editorID.c_str(), coordinates->cellX, coordinates->cellY))
 			return true;
 
 		const auto* land = cell->GetRuntimeData().cellLand;
@@ -279,8 +290,8 @@ namespace GrassControl::DistantGrass
 		if (!allowLoadNow)
 			return nullptr;
 
-		if (const auto info = gridState.cellGrid->GetFromGrid(x, y))
-			info->AdvanceTerrain(TerrainLoad::Claimed, TerrainLoad::None);
+		if (const auto info = gridState.cellGrid->GetFromGrid(x, y); info && info->AdvanceTerrain(TerrainLoad::Claimed, TerrainLoad::None))
+			info->loadingTerrain = false;
 
 		{
 			RE::BSSpinLockGuard lock(const_cast<RE::TES*>(tes)->lock);
@@ -308,7 +319,7 @@ namespace GrassControl::DistantGrass
 		if (diffX <= uHalf && diffY <= uHalf)
 			return GrassState::Active;
 
-		return canLoadFromFile && c.HasCacheFile(world) ? GrassState::Active : GrassState::Lod;
+		return canLoadFromFile && !Config::GrassCliffs && c.HasCacheFile(world) ? GrassState::Active : GrassState::Lod;
 	}
 
 	void RemoveCellGrass(RE::TESObjectCELL* cell)
@@ -316,28 +327,65 @@ namespace GrassControl::DistantGrass
 		if (!cell)
 			return;
 
+		std::shared_ptr<CellHoldCount> holds;
 		{
 			std::scoped_lock lock(gridState.cellMapMutex);
+			if (const auto it = gridState.cellHolds.find(cell); it != gridState.cellHolds.end()) {
+				holds = it->second;
+				holds->BeginDestruction();
+			}
 
-			if (const auto info = gridState.cellGrid->FindByCell(cell)) {
+			if (const auto info = gridState.cellGrid ? gridState.cellGrid->FindByCell(cell) : nullptr) {
 				info->Reset();
 				info->cell = nullptr;
 				gridState.cellGrid->map.erase(cell);
 				gridState.cellGrid->RetryDistantCell(info->x, info->y);
 			}
-
-			// A queued task may belong to a cell NGIO never tracked, and must not run once the cell is gone.
-			ClearCellAddGrassTask(cell);
 		}
+		// Native callers can hold the grass-task lock before entering NGIO; never take it under the map lock.
+		ClearCellAddGrassTask(cell);
 
-		RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
-		ReattachRetiredGrass(cell);
-		RE::RemoveCellGrass(RE::BGSGrassManager::GetSingleton(), cell);
-		CliffSurfaces::Forget(cell->GetFormID());
+		if (holds)
+			holds->WaitUntilReleased();
+
+		// A caller holding the cell before BeginDestruction may publish a task after the first cancellation.
+		ClearCellAddGrassTask(cell);
+		{
+			RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
+			ReattachRetiredGrass(cell);
+			RE::RemoveCellGrass(RE::BGSGrassManager::GetSingleton(), cell);
+			CliffSurfaces::Forget(cell->GetFormID());
+		}
+		{
+			std::scoped_lock lock(gridState.cellMapMutex);
+			gridState.cellHolds.erase(cell);
+		}
+	}
+
+	CellHolder TryHoldTrackedCell(RE::TESObjectCELL* cell)
+	{
+		if (!gridState.cellGrid)
+			return {};
+
+		std::scoped_lock lock(gridState.cellMapMutex);
+		const auto info = gridState.cellGrid->FindByCell(cell);
+		if (!info || info->cell != cell)
+			return {};
+
+		const auto it = gridState.cellHolds.find(cell);
+		return it != gridState.cellHolds.end() ? CellHolder(it->second) : CellHolder{};
 	}
 
 	bool PrepareGrassTask(const std::shared_ptr<CellInfo>& info, RE::TESObjectCELL* cell, GrassState wanted)
 	{
+		auto holds = gridState.cellHolds.find(cell);
+		if (holds == gridState.cellHolds.end())
+			holds = gridState.cellHolds.emplace(cell, std::make_shared<CellHoldCount>()).first;
+		if (holds->second->IsBeingDestroyed()) {
+			gridState.gridUpdatePending = true;
+			return false;
+		}
+
 		if (info->cell != cell) {
 			if (info->cell)
 				gridState.cellGrid->map.erase(info->cell);
@@ -347,6 +395,8 @@ namespace GrassControl::DistantGrass
 		}
 
 		const bool wasQueued = info->queued;
+		if (!wasQueued)
+			++info->taskGeneration;
 		info->queued = true;
 		info->wanted = wanted;
 		return !wasQueued;
@@ -370,6 +420,7 @@ namespace GrassControl::DistantGrass
 		pendingY = y;
 		pendingCells.clear();
 		nextPendingCell = 0;
+		nextRetry = {};
 		if (!world)
 			inFlight.clear();
 
@@ -401,8 +452,25 @@ namespace GrassControl::DistantGrass
 		const auto started = std::chrono::steady_clock::now();
 		std::erase_if(inFlight, [&](const auto& entry) {
 			const auto& info = entry.first;
-			return started - entry.second > DistantCellTimeout || (!info->loadingTerrain && info->terrainLoad == TerrainLoad::None && !info->queued);
+			if (started - entry.second > DistantCellTimeout) {
+				// A claimed engine task can be dropped before the terrain worker starts.
+				// A worker that already entered Loading still owns its terrain until it returns.
+				if (info->AdvanceTerrain(TerrainLoad::Queued, TerrainLoad::None) || info->AdvanceTerrain(TerrainLoad::Claimed, TerrainLoad::None))
+					info->loadingTerrain = false;
+				return true;
+			}
+			return !info->loadingTerrain && info->terrainLoad == TerrainLoad::None && !info->queued;
 		});
+
+		if (nextPendingCell == pendingCells.size() && started >= nextRetry && pendingWorld) {
+			// Failed loads must get another chance even when the player stays in the same cell.
+			pendingCells.clear();
+			nextPendingCell = 0;
+			nextRetry = started + DistantRetryDelay;
+			ForEachDistantCell(pendingX, pendingY, globals::GridsToLoad() / 2, GetGrassGridRadius(), [&](int x, int y) {
+				pendingCells.emplace_back(x, y);
+			});
+		}
 
 		const bool canLoadGrass = globals::AllowLoadGrass();
 
@@ -413,7 +481,7 @@ namespace GrassControl::DistantGrass
 
 			const auto [x, y] = pendingCells[nextPendingCell++];
 			auto info = GetFromGrid(x, y);
-			if (!info || info->have != GrassState::None || info->queued)
+			if (!info || info->have != GrassState::None || info->queued || info->loadingTerrain)
 				continue;
 
 			auto* world = pendingWorld;
@@ -502,7 +570,7 @@ namespace GrassControl::DistantGrass
 		};
 
 		if (addType <= 0) {
-			std::vector<RE::TESObjectCELL*> remove;
+			std::vector<std::pair<RE::TESObjectCELL*, CellHolder>> remove;
 			{
 				std::unique_lock lock(gridState.cellMapMutex, std::defer_lock);
 				if (!lockMap(lock))
@@ -514,17 +582,19 @@ namespace GrassControl::DistantGrass
 						return false;
 
 					auto* cell = info->cell;
+					auto holder = TryHoldTrackedCell(cell);
 					info->cell = nullptr;
 					info->Reset();
 
-					ClearCellAddGrassTask(cell);
-					remove.push_back(cell);
+					if (holder)
+						remove.emplace_back(cell, std::move(holder));
 
 					return true;
 				});
 			}
 
-			for (auto* cell : remove) {
+			for (const auto& [cell, holder] : remove) {
+				ClearCellAddGrassTask(cell);
 				RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
 				ReattachRetiredGrass(cell);
 				RE::RemoveCellGrass(RE::BGSGrassManager::GetSingleton(), cell);
@@ -573,7 +643,6 @@ namespace GrassControl::DistantGrass
 		return static_cast<std::uint64_t>(world) << 32 | static_cast<std::uint32_t>(static_cast<std::uint16_t>(x)) << 16 | static_cast<std::uint16_t>(y);
 	}
 
-	// Zeroed cell storage carrying only coordinates and a worldspace stands in for the real cell.
 	RE::TESObjectCELL* CacheOnlyCells::CreateStandIn(RE::TESWorldSpace* world, int x, int y)
 	{
 		const std::size_t size = REL::Module::IsAE() && REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_6_629 ? 0x148 : 0x140;
@@ -730,9 +799,7 @@ namespace GrassControl::DistantGrass
 
 	void ResetGridUpdates()
 	{
-		gridState.gridUpdatesEnabled = false;
-		gridState.gridUpdatePending = false;
-		gridState.streamingAllowed = false;
+		gridState.SuspendForLoad();
 
 		if (gridState.cellGrid)
 			gridState.cellGrid->QueueDistantCells(nullptr, 0, 0, 0, 0);
@@ -746,7 +813,15 @@ namespace GrassControl::DistantGrass
 		GrassPatchCreation::LimitParallelism(!loading);
 
 		auto* tes = RE::TES::GetSingleton();
-		if (!gridState.cellGrid || !gridState.gridUpdatesEnabled || !tes || loading)
+		if (!gridState.cellGrid || !tes || loading)
+			return;
+
+		auto* world = tes->GetRuntimeData2().worldSpace;
+		if (tes->interiorCell || !world)
+			return;
+
+		auto* manager = RE::BGSGrassManager::GetSingleton();
+		if (!gridState.gridUpdatesEnabled || !manager || !manager->enableGrass)
 			return;
 
 		RetireReplacedGrass();

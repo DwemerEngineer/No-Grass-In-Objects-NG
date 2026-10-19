@@ -290,12 +290,18 @@ namespace GrassControl
 			} else if (param) {
 				if (auto* grass = RE::TESForm::LookupByID<RE::TESGrass>(param->grassFormID)) {
 					const auto& bounds = grass->boundData;
-					if (bounds.boundMax.x != 0 && bounds.boundMin.x != 0) {
-						halfWidthX = std::abs(float(bounds.boundMax.x - bounds.boundMin.x)) / 2;
-						halfWidthY = std::abs(float(bounds.boundMax.y - bounds.boundMin.y)) / 2;
+					const float widthX = std::abs(float(bounds.boundMax.x - bounds.boundMin.x));
+					const float widthY = std::abs(float(bounds.boundMax.y - bounds.boundMin.y));
+					if (widthX > 0 || widthY > 0) {
+						if (widthX > 0)
+							halfWidthX = widthX / 2;
+						if (widthY > 0)
+							halfWidthY = widthY / 2;
 						radius = std::max(halfWidthX, halfWidthY) / 2;
 					}
 
+					halfWidthX *= static_cast<float>(settings.WidthMultiplier);
+					halfWidthY *= static_cast<float>(settings.WidthMultiplier);
 					radius *= static_cast<float>(settings.WidthMultiplier);
 				}
 			}
@@ -688,8 +694,7 @@ namespace GrassControl
 		if (const auto* router = RE::hkMemoryRouter::GetInstancePtr())
 			return router->Heap != nullptr;
 
-		// The Havok handler accepts paired BSThread start and exit events for non-engine threads.
-		// The opaque thread key must match across both events; the receiver is unused.
+		// Pair Havok thread start and exit events with the same opaque thread key.
 		// Construct query storage first so ThreadMemory can reset it before either thread-local object is destroyed.
 		resources.Reset();
 		auto& memory = GetThreadMemory();

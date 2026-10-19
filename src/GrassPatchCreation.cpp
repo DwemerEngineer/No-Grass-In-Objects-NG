@@ -100,6 +100,13 @@ namespace GrassControl
 		const auto* coordinates = cell->GetCoordinates();
 		const bool fromCache = globals::AllowLoadGrass() && world && coordinates && DistantGrass::gridState.cacheIndex.Contains(world->editorID.c_str(), coordinates->cellX, coordinates->cellY);
 
+		auto& workers = DistantGrass::GrassWorkers::Get();
+		const auto block = workers.AcquireBlock(cell);
+		const stl::scope_exit releaseBlock([&] {
+			ReleaseNativePlacement();
+			workers.ReleaseBlock(block);
+		});
+		RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
 		GrassPatchCreation patchCreation(cell, abort);
 		if (!patchCreation.PrepareCell(NeedsCollision(manager, fromCache))) {
 			PhysicsRaycast::GetSingleton().DeferCell(cell);
@@ -107,18 +114,12 @@ namespace GrassControl
 			return;
 		}
 
-		auto& workers = DistantGrass::GrassWorkers::Get();
-		workers.AcquireBlock(cell);
-		const stl::scope_exit releaseBlock([&] { workers.ReleaseBlock(cell); });
-		{
-			RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
-			add(manager, cell, abort);
-			ReleaseNativePlacement();
+		add(manager, cell, abort);
+		ReleaseNativePlacement();
 
-			// The engine has already written the cell's cache file, so cliff grass built while generating would be discarded.
-			if (!*abort && !Config::GeneratingCache)
-				patchCreation.AddCliffGrass(manager);
-		}
+		// The engine has already written the cell's cache file, so cliff grass built while generating would be discarded.
+		if (!*abort && !Config::GeneratingCache)
+			patchCreation.AddCliffGrass(manager);
 	}
 
 	GrassPatchCreation::GrassPatchCreation(RE::TESObjectCELL* a_cell, bool* a_abort) :
@@ -706,8 +707,13 @@ namespace GrassControl
 		}
 
 		std::size_t sampleCount = 0;
-		for (const auto& entry : tops)
-			sampleCount += entry.second.size();
+		for (auto& [texture, samples] : tops) {
+			const auto position = [](const CliffSample& sample) { return std::tie(sample.x, sample.y, sample.z); };
+			std::ranges::sort(samples, {}, position);
+			const auto duplicates = std::ranges::unique(samples, {}, position);
+			samples.erase(duplicates.begin(), duplicates.end());
+			sampleCount += samples.size();
+		}
 		if (sampleCount)
 			logger::debug("Cliff tops in cell ({}, {}): {} samples over {} landscape textures", coordinates->cellX, coordinates->cellY, sampleCount, tops.size());
 
@@ -775,6 +781,9 @@ namespace GrassControl
 
 					const auto top = FindCliffTop(x, y, sample.z + CliffSampleStep, sample.z - CliffSampleStep);
 					if (!top || top->normal.z < minSlope || top->normal.z > maxSlope || !SupportedAround(x, y, top->position.z, reach))
+						continue;
+
+					if (Config::RayCast && !settings->IsExempt(cell->GetRuntimeData().cellLand, x, y, top->position.z, &param) && settings->OnBlockedTexture(x, y, top->position.z))
 						continue;
 
 					// Start just above the cliff surface so only objects standing on it block the grass.

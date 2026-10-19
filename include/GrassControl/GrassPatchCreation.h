@@ -13,7 +13,6 @@ namespace GrassControl
 		GrassPatchCreation(const GrassPatchCreation&) = delete;
 		GrassPatchCreation& operator=(const GrassPatchCreation&) = delete;
 
-		/** @brief Routes the engine's patch creation and instance completion through NGIO's placement. */
 		static void Install();
 		static RE::TESObjectCELL* GetCell();
 		static bool IsEnabled() { return enabled; }
@@ -28,7 +27,7 @@ namespace GrassControl
 		static std::uint32_t CreatePatch(RE::BGSGrassManager* manager, RE::CreateGrassParams* params, RE::BSMultiStreamInstanceTriShape* shape);
 		static void FinishInstances(RE::BSMultiStreamInstanceTriShape* shape, RE::BSTArray<std::uint32_t>& instances);
 
-		/** @brief True when the cell's grass must wait for collision: placed grass is filtered, and cached grass still gets cliff grass on top. */
+		// Cached grass needs collision only for additional cliff placements.
 		static bool NeedsCollision(const RE::BGSGrassManager* manager, bool fromCache);
 
 		bool PrepareCell(bool requireCollision = true);
