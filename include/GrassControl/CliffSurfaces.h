@@ -47,8 +47,25 @@ namespace GrassControl::CliffSurfaces
 	{
 		static const TextureIndex index = [] {
 			TextureIndex result;
-			for (auto* landTexture : RE::TESDataHandler::GetSingleton()->GetFormArray<RE::TESLandTexture>()) {
-				if (!landTexture || !landTexture->textureSet || landTexture->textureGrassList.empty())
+			auto* data = RE::TESDataHandler::GetSingleton();
+			std::unordered_map<const RE::TESFile*, std::size_t> loadOrder;
+			for (const auto* file : data->files)
+				loadOrder.emplace(file, loadOrder.size() + 1);
+
+			const auto priority = [&](const RE::TESLandTexture* texture) {
+				const auto it = loadOrder.find(texture->GetFile());
+				// A plugin can clear one record and supply grass through another record with the same diffuse texture.
+				return std::pair{ it != loadOrder.end() ? it->second : 0, !texture->textureGrassList.empty() };
+			};
+			const auto add = [&](auto& entries, std::string key, RE::TESLandTexture* texture) {
+				auto& match = entries[std::move(key)];
+				if (!match || priority(texture) > priority(match))
+					match = texture;
+			};
+
+			// GetFile() identifies the winning override; FormIDs identify the original plugin instead.
+			for (auto* landTexture : data->GetFormArray<RE::TESLandTexture>()) {
+				if (!landTexture || landTexture->IsDeleted() || !landTexture->textureSet)
 					continue;
 
 				const char* diffuse = landTexture->textureSet->GetTexturePath(RE::BSTextureSet::Texture::kDiffuse);
@@ -56,10 +73,10 @@ namespace GrassControl::CliffSurfaces
 					continue;
 
 				auto path = NormalizeTexturePath(diffuse);
-				result.byStem.try_emplace(std::string(FileStem(path)), landTexture);
-				result.byPath.try_emplace(std::move(path), landTexture);
+				add(result.byStem, std::string(FileStem(path)), landTexture);
+				add(result.byPath, std::move(path), landTexture);
 			}
-			logger::info("Indexed {} landscape textures with grass for cliff tops", result.byPath.size());
+			logger::info("Indexed {} landscape textures for cliff tops", result.byPath.size());
 			return result;
 		}();
 		return index;

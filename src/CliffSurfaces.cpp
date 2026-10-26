@@ -19,7 +19,7 @@ namespace GrassControl::CliffSurfaces
 
 		std::scoped_lock lock(unmatchedMutex);
 		if (unmatched.insert(path).second)
-			logger::info("Cliff texture {} matches no landscape texture with grass", path);
+			logger::info("Cliff texture {} matches no landscape texture", path);
 		return nullptr;
 	}
 
@@ -56,7 +56,7 @@ namespace GrassControl::CliffSurfaces
 		if (!texture || texture->name.empty())
 			return;
 
-		if (auto* landTexture = LandTextureFor(texture->name.c_str()))
+		if (auto* landTexture = LandTextureFor(texture->name.c_str()); landTexture && !landTexture->textureGrassList.empty())
 			surfaces.push_back({ geometry->worldBound.center, geometry->worldBound.radius, formID, landTexture });
 	}
 
