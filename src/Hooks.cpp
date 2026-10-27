@@ -247,7 +247,7 @@ namespace GrassControl
 			{
 				if (auto* cell = GrassPatchCreation::GetCell()) {
 					if (const auto* coordinates = cell->GetCoordinates())
-						return func(a_GrassManager, a_grassParam, static_cast<std::uint32_t>(coordinates->cellX), static_cast<std::uint32_t>(coordinates->cellY), a_typeKey, a_name);
+						return func(a_GrassManager, a_grassParam, static_cast<std::uint32_t>(GrassPatchCreation::ShapeCoordinate(coordinates->cellX)), static_cast<std::uint32_t>(GrassPatchCreation::ShapeCoordinate(coordinates->cellY)), a_typeKey, a_name);
 				}
 
 				return func(a_GrassManager, a_grassParam, a_CellXDivided * 12, a_CellYDivided * 12, a_typeKey, a_name);

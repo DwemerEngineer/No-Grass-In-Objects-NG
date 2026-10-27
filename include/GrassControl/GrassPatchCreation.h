@@ -16,6 +16,10 @@ namespace GrassControl
 		static void Install();
 		static RE::TESObjectCELL* GetCell();
 		static bool IsEnabled() { return enabled; }
+
+		// Extended-grid shapes use block corners; native shapes use block indices.
+		static int ShapeCoordinate(int cell);
+
 		// Reserve cores for frame processing during gameplay.
 		static void LimitParallelism(bool limit);
 
@@ -32,7 +36,7 @@ namespace GrassControl
 
 		bool PrepareCell(bool requireCollision = true);
 
-		// Caller holds grassCreateLock; grass types come from the matching landscape texture.
+		// Caller holds grassCreateLock.
 		void AddCliffGrass(RE::BGSGrassManager* manager);
 
 	private:
@@ -42,6 +46,8 @@ namespace GrassControl
 		inline static constexpr std::size_t DispatchCandidates = 1024;
 		inline static constexpr std::uint32_t InstanceBufferBytes = 0x40000;
 		inline static constexpr int CellsPerOrigin = 12;
+		// Sharing a shape avoids a separate cull and render pass for every cell.
+		inline static constexpr int CellsPerShape = CellsPerOrigin;
 		inline static constexpr float CellSize = 4096.0f;
 		inline static constexpr std::size_t GameplayParallelism = 6;
 

@@ -7,7 +7,7 @@ namespace GrassControl::CliffSurfaces
 		RE::NiPoint3 center;
 		float radius;
 		RE::FormID object;
-		RE::TESLandTexture* landTexture;  // Matches the cliff's diffuse texture and supplies its grass types.
+		RE::TESLandTexture* landTexture;
 	};
 
 	inline std::mutex mutex;
@@ -53,9 +53,9 @@ namespace GrassControl::CliffSurfaces
 				loadOrder.emplace(file, loadOrder.size() + 1);
 
 			const auto priority = [&](const RE::TESLandTexture* texture) {
+				// GetFile() returns the winning override's plugin.
 				const auto it = loadOrder.find(texture->GetFile());
-				// A plugin can clear one record and supply grass through another record with the same diffuse texture.
-				return std::pair{ it != loadOrder.end() ? it->second : 0, !texture->textureGrassList.empty() };
+				return std::pair{ !texture->textureGrassList.empty(), it != loadOrder.end() ? it->second : 0 };
 			};
 			const auto add = [&](auto& entries, std::string key, RE::TESLandTexture* texture) {
 				auto& match = entries[std::move(key)];
@@ -63,7 +63,6 @@ namespace GrassControl::CliffSurfaces
 					match = texture;
 			};
 
-			// GetFile() identifies the winning override; FormIDs identify the original plugin instead.
 			for (auto* landTexture : data->GetFormArray<RE::TESLandTexture>()) {
 				if (!landTexture || landTexture->IsDeleted() || !landTexture->textureSet)
 					continue;

@@ -74,6 +74,12 @@ namespace GrassControl
 		logger::info("Shared grass placement enabled{}.", Config::ThreadedGrassPlacement ? " with placement workers" : "");
 	}
 
+	int GrassPatchCreation::ShapeCoordinate(int cell)
+	{
+		// Signed division must truncate toward zero to match the engine's grass origins.
+		return Config::ExtendGrassDistance ? cell / CellsPerShape * CellsPerShape : cell / CellsPerOrigin;
+	}
+
 	RE::TESObjectCELL* GrassPatchCreation::GetCell()
 	{
 		return current ? current->cell : nullptr;
@@ -743,12 +749,10 @@ namespace GrassControl
 		if (!std::isfinite(spacing) || spacing < 1.0f || !std::isfinite(chance) || chance <= 0.0f)
 			return;
 
-		// LoadGrassType keys shapes by cell once the extended grid repacks its coordinates, else by 12x12 block.
 		const auto* coordinates = cell->GetCoordinates();
-		const int keyDivisor = Config::ExtendGrassDistance ? 1 : CellsPerOrigin;
 		std::uint64_t typeKey = 0;
 		RE::BSFixedString modelKey;
-		auto* shape = RE::LoadGrassType(manager, &param, static_cast<std::uint32_t>(coordinates->cellX / keyDivisor), static_cast<std::uint32_t>(coordinates->cellY / keyDivisor), &typeKey, &modelKey);
+		auto* shape = RE::LoadGrassType(manager, &param, static_cast<std::uint32_t>(ShapeCoordinate(coordinates->cellX)), static_cast<std::uint32_t>(ShapeCoordinate(coordinates->cellY)), &typeKey, &modelKey);
 		if (!shape)
 			return;
 

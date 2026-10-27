@@ -59,8 +59,10 @@ namespace GrassControl
 			}
 		}
 
-		if (watched)
+		if (watched) {
 			watchedWriters.fetch_sub(1);
+			watchedWriters.notify_all();
+		}
 
 		*writerThread = thread;
 		_mm_mfence();
@@ -68,45 +70,26 @@ namespace GrassControl
 
 	void PhysicsRaycast::WorldReadGate::Enter(RE::bhkWorld* world)
 	{
-		// A thread already inside the window must not wait for the window to drain.
+		// Reentrant queries must not wait for a writer blocked by this thread's read lock.
 		if (depth++)
 			return;
 
 		watchedLock.store(&world->worldLock, std::memory_order_relaxed);
-		std::unique_lock lock(mutex);
-
 		for (;;) {
-			const auto now = std::chrono::steady_clock::now();
-			if (!readers && now - opened >= WindowLength)
-				reopenAt = std::max(reopenAt, opened + WindowLength + WriterGap);
+			if (const auto writers = watchedWriters.load()) {
+				watchedWriters.wait(writers);
+				continue;
+			}
 
-			const bool writerWaiting = watchedWriters.load() != 0;
-			if (readers && owner == world && now - opened < WindowLength && !writerWaiting) {
-				++readers;
+			world->worldLock.LockForRead();
+			if (!watchedWriters.load()) {
+				heldLock = &world->worldLock;
 				return;
 			}
 
-			if (!readers && now >= reopenAt && !writerWaiting)
-				break;
-
-			if (readers) {
-				drained.wait(lock);
-			} else {
-				const auto nextRead = reopenAt;
-				lock.unlock();
-				while (std::chrono::steady_clock::now() < nextRead || watchedWriters.load())
-					std::this_thread::yield();
-				lock.lock();
-			}
+			// Release the read lock if a writer arrived during acquisition.
+			world->worldLock.UnlockForRead();
 		}
-
-		owner = world;
-		const auto now = std::chrono::steady_clock::now();
-		if (now - opened >= WindowLength)
-			opened = now;
-
-		readers = 1;
-		world->worldLock.LockForRead();
 	}
 
 	void PhysicsRaycast::WorldReadGate::Exit()
@@ -114,19 +97,7 @@ namespace GrassControl
 		if (--depth)
 			return;
 
-		std::scoped_lock lock(mutex);
-		if (--readers)
-			return;
-
-		owner->worldLock.UnlockForRead();
-		owner = nullptr;
-
-		const auto now = std::chrono::steady_clock::now();
-		reopenAt = now;
-		if (now - opened >= WindowLength || watchedWriters.load())
-			reopenAt += WriterGap;
-
-		drained.notify_all();
+		std::exchange(heldLock, nullptr)->UnlockForRead();
 	}
 
 	PhysicsRaycast::WorldReadGuard::WorldReadGuard(WorldReadGate& gate, RE::bhkWorld* world) :

@@ -92,7 +92,7 @@ namespace GrassControl
 		static bool ValidHit(float fraction, float x, float y, float z);
 		static bool ValidRay(const glm::vec4& start, const glm::vec4& end);
 
-		// Readers share short windows and leave gaps for the engine's polling writers to acquire the world lock.
+		// Pending engine writers take priority over grass queries.
 		class WorldReadGate final
 		{
 		public:
@@ -102,18 +102,10 @@ namespace GrassControl
 			void Exit();
 
 		private:
-			inline static constexpr auto WindowLength = std::chrono::microseconds(2000);
-			inline static constexpr auto WriterGap = std::chrono::microseconds(300);
-
 			std::atomic<RE::BSReadWriteLock*> watchedLock{ nullptr };
 			std::atomic<std::uint32_t> watchedWriters{ 0 };
 			bool installed = false;
-			std::mutex mutex;
-			std::condition_variable drained;
-			RE::bhkWorld* owner = nullptr;
-			std::uint32_t readers = 0;
-			std::chrono::steady_clock::time_point opened;
-			std::chrono::steady_clock::time_point reopenAt;
+			inline static thread_local RE::BSReadWriteLock* heldLock = nullptr;
 			inline static thread_local std::uint32_t depth = 0;
 		};
 

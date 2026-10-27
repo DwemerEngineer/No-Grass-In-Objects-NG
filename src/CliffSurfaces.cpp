@@ -12,7 +12,7 @@ namespace GrassControl::CliffSurfaces
 		const auto& index = GetTextureIndex();
 
 		const auto path = NormalizeTexturePath(texturePath);
-		if (const auto it = index.byPath.find(path); it != index.byPath.end())
+		if (const auto it = index.byPath.find(path); it != index.byPath.end() && !it->second->textureGrassList.empty())
 			return it->second;
 		if (const auto it = index.byStem.find(std::string(FileStem(path))); it != index.byStem.end())
 			return it->second;
@@ -60,7 +60,6 @@ namespace GrassControl::CliffSurfaces
 			surfaces.push_back({ geometry->worldBound.center, geometry->worldBound.radius, formID, landTexture });
 	}
 
-	// Missing 3D leaves the result uncached so a later build can retry.
 	static std::vector<Surface> CollectCell(RE::TESObjectCELL* cell, bool& complete)
 	{
 		std::vector<Surface> surfaces;

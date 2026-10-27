@@ -173,9 +173,7 @@ namespace GrassControl::DistantGrass
 		if (!coordinates)
 			return INT64_MIN;
 
-		// Truncating division matches the engine's own block keys.
-		const int divisor = Config::ExtendGrassDistance && GrassPatchCreation::IsEnabled() ? 1 : 12;
-		return (static_cast<std::int64_t>(coordinates->cellX / divisor) << 32) | static_cast<std::uint32_t>(coordinates->cellY / divisor);
+		return (static_cast<std::int64_t>(GrassPatchCreation::ShapeCoordinate(coordinates->cellX)) << 32) | static_cast<std::uint32_t>(GrassPatchCreation::ShapeCoordinate(coordinates->cellY));
 	}
 
 	GrassWorkers& GrassWorkers::Get()
