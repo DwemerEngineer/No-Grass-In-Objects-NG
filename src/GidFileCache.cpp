@@ -1,6 +1,5 @@
 #include "GrassControl/GidFileCache.h"
 
-#include "GrassControl/AddCellGrassTask.h"
 #include "GrassControl/Config.h"
 #include "GrassControl/Engine.h"
 #include "GrassControl/Globals.h"
@@ -17,7 +16,6 @@ namespace GrassControl::GidFileCache
 
 		setting->data.b = true;
 
-		// The manager caches this setting at construction; later INI writes do not update it.
 		if (auto* manager = RE::BGSGrassManager::GetSingleton()) {
 			manager->generateGrassDataFiles = true;
 		}
@@ -26,7 +24,6 @@ namespace GrassControl::GidFileCache
 
 namespace GrassControl::Generation
 {
-	// Progress keys are persisted, so their format must remain compatible with existing progress files.
 	static std::string WorldKey(std::string_view world)
 	{
 		return world.empty() ? std::string("ws") : fmt::format("ws_{}", world);
@@ -51,7 +48,7 @@ namespace GrassControl::Generation
 			Prepare();
 		}
 
-		LogStepTime();
+		FinishStep();
 
 		if (worlds.empty()) {
 			Finish();
@@ -63,40 +60,15 @@ namespace GrassControl::Generation
 			BeginWorld();
 		}
 
-		for (;;) {
-			std::optional<std::pair<int, int>> retry;
-			{
-				std::scoped_lock lock(mutex);
-				for (auto it = retryCells.begin(); it != retryCells.end();) {
-					const auto [x, y] = *it;
-					it = retryCells.erase(it);
-					if (x < -GridHalf || x > GridHalf || y < -GridHalf || y > GridHalf || done.contains(CellKey(worlds.back().name, x, y)))
-						continue;
-
-					retry = { x, y };
-					break;
-				}
-			}
-			if (retry && !IsPending(retry->first, retry->second)) {
-				pending[Index(retry->first, retry->second)] = true;
-				++pendingCount;
-				--doneCells;
-			}
-			if (!pendingCount)
-				break;
-
-			const auto [x, y] = retry ? *retry : NextCell();
+		while (pendingCount) {
+			const auto [x, y] = NextCell();
 			if (!VisitCell(x, y)) {
 				Clear(x, y, true);
 				continue;
 			}
 
-			for (int cellX = x - uHalf; cellX <= x + uHalf; ++cellX) {
-				for (int cellY = y - uHalf; cellY <= y + uHalf; ++cellY)
-					Clear(cellX, cellY);
-			}
-
-			stepCell = { x, y };
+			const auto* tes = RE::TES::GetSingleton();
+			stepCell = { tes->currentGridX, tes->currentGridY };
 			stepStarted = std::chrono::steady_clock::now();
 			stepBuildMicroseconds = 0;
 			stepBuiltCells = 0;
@@ -104,21 +76,41 @@ namespace GrassControl::Generation
 		}
 
 		MarkDone(WorldKey(worlds.back().name));
+
 		worlds.pop_back();
 		worldStarted = false;
 		++doneWorlds;
+
 		OnGrassDispatch();
 
 		return true;
 	}
 
-	void CacheGenerator::LogStepTime()
+	void CacheGenerator::FinishStep()
 	{
 		if (!stepCell)
 			return;
 
+		// A dispatched grid can omit cells without creating or aborting a grass task.
+		int unfinished = 0;
+		for (int x = stepCell->first - uHalf; x <= stepCell->first + uHalf; ++x) {
+			for (int y = stepCell->second - uHalf; y <= stepCell->second + uHalf; ++y) {
+				if (!IsPending(x, y))
+					continue;
+
+				if (HasDone(CellKey(worlds.back().name, x, y)))
+					Clear(x, y);
+				else
+					++unfinished;
+			}
+		}
+
+		if (unfinished)
+			logger::warn("Grid at ({}, {}) left {} cells incomplete; they remain pending", stepCell->first, stepCell->second, unfinished);
+
 		const auto total = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - stepStarted).count();
 		logger::info("Grid at ({}, {}) took {} ms; {} cells spent {} ms building grass", stepCell->first, stepCell->second, total, stepBuiltCells.load(), stepBuildMicroseconds.load() / 1000);
+
 		stepCell.reset();
 	}
 
@@ -127,22 +119,18 @@ namespace GrassControl::Generation
 		MarkDone(CellKey(world, x, y));
 	}
 
-	void CacheGenerator::RetryCell(int x, int y)
-	{
-		std::scoped_lock lock(mutex);
-		retryCells.emplace(x, y);
-	}
-
 	void CacheGenerator::Prepare()
 	{
 		const auto progressPath = Util::GetProgressFilePath();
 		if (std::ifstream progress{ progressPath }) {
 			std::scoped_lock lock(mutex);
+
 			for (std::string line; std::getline(progress, line);) {
 				line = Util::StringHelpers::Trim(line);
 				if (!line.empty())
 					done.insert(line);
 			}
+
 			if (progress.bad())
 				stl::report_and_fail("Unable to read the complete grass generation progress file.");
 		}
@@ -151,6 +139,7 @@ namespace GrassControl::Generation
 		if (!resuming) {
 			const auto directory = Util::Files::GamePath(L"Data/Grass");
 			std::filesystem::create_directories(directory);
+
 			if (!Config::Updating) {
 				for (const auto& entry : std::filesystem::directory_iterator(directory)) {
 					const auto extension = entry.path().extension();
@@ -173,6 +162,7 @@ namespace GrassControl::Generation
 				logger::info("{}: {}", label, name);
 				names.insert(name);
 			}
+
 			return names;
 		};
 
@@ -180,6 +170,14 @@ namespace GrassControl::Generation
 		const auto only = parseList(Config::OnlyPregenerateWorldSpaces, "Only Generating");
 
 		for (auto* world : RE::TESDataHandler::GetSingleton()->GetFormArray<RE::TESWorldSpace>()) {
+			if (!world || world->IsDeleted())
+				continue;
+
+			if (world->flags.any(RE::TESWorldSpace::Flag::kNoGrass)) {
+				logger::info("Skipping {}: worldspace is flagged No Grass", world->editorID.c_str());
+				continue;
+			}
+
 			std::string name = world->editorID.c_str();
 			if (!only.empty() ? name.empty() || !only.contains(name) : !name.empty() && skip.contains(name))
 				continue;
@@ -198,19 +196,53 @@ namespace GrassControl::Generation
 		uHalf = uGrids / 2;
 		pending.assign(GridSide * GridSide, false);
 		pendingCount = 0;
+		totalCells = 0;
 		doneCells = 0;
 
-		const auto& name = worlds.back().name;
+		const auto& [world, name] = worlds.back();
+
+		const bool fixedDimensions = world->flags.any(RE::TESWorldSpace::Flag::kFixedDimensions);
+		if (fixedDimensions)
+			logger::info("{}: generating within the fixed grid centered at ({}, {})", name, world->fixedCenter.x, world->fixedCenter.y);
+
+		// Exterior CELL records are loaded on demand, so the world's runtime cell map is incomplete.
+		if (const auto* files = world->sourceFiles.array) {
+			RE::BSSpinLockGuard lock(RE::TES::GetSingleton()->lock);
+			for (auto* file : *files) {
+				auto* reader = file ? file->Duplicate() : nullptr;
+				if (!reader)
+					stl::report_and_fail(fmt::format("Unable to read exterior cells for {}.", name));
+
+				for (int x = -GridHalf; x <= GridHalf; ++x) {
+					lastActivity = GetTickCount64();
+					for (int y = -GridHalf; y <= GridHalf; ++y) {
+						// Moving a fixed world's grid can detach portal nodes still referenced by its lights.
+						if (fixedDimensions && (std::abs(x - world->fixedCenter.x) > uHalf || std::abs(y - world->fixedCenter.y) > uHalf))
+							continue;
+
+						if (reader->SeekCell(world, x, y) && !(reader->currentform.flags & RE::TESObjectCELL::RecordFlags::kIgnored))
+							pending[Index(x, y)] = !(reader->currentform.flags & RE::TESObjectCELL::RecordFlags::kDeleted);
+					}
+				}
+			}
+		}
+
 		for (int x = -GridHalf; x <= GridHalf; ++x) {
 			for (int y = -GridHalf; y <= GridHalf; ++y) {
+				if (!pending[Index(x, y)])
+					continue;
+
+				++totalCells;
 				if (HasDone(CellKey(name, x, y))) {
+					pending[Index(x, y)] = false;
 					++doneCells;
 				} else {
-					pending[Index(x, y)] = true;
 					++pendingCount;
 				}
 			}
 		}
+
+		logger::info("{}: {} exterior cells in the generation range, {} already completed", name, totalCells, doneCells);
 	}
 
 	std::size_t CacheGenerator::Index(int x, int y)
@@ -271,7 +303,8 @@ namespace GrassControl::Generation
 			RE::BSSpinLockGuard lock(RE::TES::GetSingleton()->lock);
 			cell = RE::GetWorldCell(world, x, y);
 		}
-		if (!cell)
+		const auto* coordinates = cell ? cell->GetCoordinates() : nullptr;
+		if (!coordinates || cell->IsDeleted())
 			return false;
 
 		const auto failFile = Util::Files::GamePath(fmt::format("Data/Grass/{}x{:04}y{:04}.fail", name, x, y));
@@ -312,12 +345,11 @@ namespace GrassControl::Generation
 			return false;
 		}
 
-		const double percent = std::clamp(static_cast<double>(doneCells) / (GridSide * GridSide), 0.0, 1.0) * 100.0;
-		const auto message = fmt::format("Generating grass for {}({}, {}) {:f} pct, world {} out of {}", name, x, y, percent, doneWorlds + 1, totalWorlds);
+		const double percent = totalCells ? static_cast<double>(doneCells) / totalCells * 100.0 : 100.0;
+		const auto message = fmt::format("Generating grass for {}({}, {}) {:.2f} pct ({}/{} cells), world {} out of {}", name, x, y, percent, doneCells, totalCells, doneWorlds + 1, totalWorlds);
 		RE::ConsoleLog::GetSingleton()->Print("%s", message.c_str());
 		logger::info("{}", message);
 
-		const auto* coordinates = cell->GetCoordinates();
 		std::array<float, 8> positionAndRotation{};
 		positionAndRotation[0] = static_cast<float>(coordinates->cellX) * 4096.0f + 2048.0f;
 		positionAndRotation[1] = static_cast<float>(coordinates->cellY) * 4096.0f + 2048.0f;
@@ -419,10 +451,7 @@ namespace GrassControl::Generation
 
 		// Start publishes the generator before the running state.
 		if (runState == RunState::Running) {
-			if (*abort) {
-				const auto& task = RE::AddCellGrassTask::FromAbort(abort)->GetRuntimeData();
-				generator->RetryCell(task.cellX, task.cellY);
-			} else if (cell) {
+			if (!*abort && cell) {
 				const auto* world = cell->GetRuntimeData().worldSpace;
 				const auto* coordinates = cell->GetCoordinates();
 				if (world && coordinates) {

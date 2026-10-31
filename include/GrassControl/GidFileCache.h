@@ -23,7 +23,6 @@ namespace GrassControl::Generation
 
 		bool Step();
 		void MarkCell(std::string_view world, int x, int y);
-		void RetryCell(int x, int y);
 
 	private:
 		using ProgressSet = std::unordered_set<std::string, Util::CaseInsensitiveString::Hash, Util::CaseInsensitiveString::Equal>;
@@ -47,13 +46,11 @@ namespace GrassControl::Generation
 		void Finish();
 		bool HasDone(const std::string& key) const;
 		void MarkDone(const std::string& key);
-		void LogStepTime();
+		void FinishStep();
 
 		mutable std::mutex mutex;
 		std::ofstream progressFile;
 		ProgressSet done;
-		// Workers record retries before decrementing queuedGrass, which keeps them associated with the current world.
-		std::set<std::pair<int, int>> retryCells;
 		std::vector<World> worlds;
 		int totalWorlds = 0;
 		int doneWorlds = 0;
@@ -61,6 +58,7 @@ namespace GrassControl::Generation
 		bool worldStarted = false;
 		std::vector<bool> pending;
 		int pendingCount = 0;
+		int totalCells = 0;
 		int doneCells = 0;
 		int uGrids = 5;
 		int uHalf = 2;
