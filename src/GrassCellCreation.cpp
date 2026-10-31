@@ -163,7 +163,7 @@ namespace GrassControl::DistantGrass
 
 	static void ReleaseTask(bool* abort)
 	{
-		RE::AddCellGrassTask::FromAbort(abort)->DecRefCount();
+		GrassTasks::FromCancel(abort)->DecRefCount();
 	}
 
 	// A shape's staging buffer belongs to the thread that starts it, so builds sharing a shape must not overlap.
@@ -235,7 +235,7 @@ namespace GrassControl::DistantGrass
 
 		bool runInline;
 		bool submitted = false;
-		RE::AddCellGrassTask::FromAbort(abort)->IncRefCount();
+		GrassTasks::FromCancel(abort)->IncRefCount();
 
 		const stl::scope_exit releaseUnsubmitted([&] {
 			if (!submitted)
@@ -641,7 +641,7 @@ namespace GrassControl::DistantGrass
 		auto* manager = RE::BGSGrassManager::GetSingleton();
 		if (!UseGrassWorkers(manager, cell)) {
 			RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
-			RE::AddCellGrassTask::Queue(cell);
+			RE::AddCellGrassTask::CreateGrassLoadTaskForCell(cell);
 			return;
 		}
 
@@ -651,20 +651,20 @@ namespace GrassControl::DistantGrass
 		RE::NiPointer<RE::AddCellGrassTask> task;
 		{
 			RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
-			if (RE::AddCellGrassTask::Get(cell))
+			if (GrassTasks::Get(cell))
 				return;
 
-			task = RE::AddCellGrassTask::Create(cell);
+			task = GrassTasks::Create(cell);
 			if (!task)
 				return;
 
-			RE::AddCellGrassTask::Set(cell, task.get());
+			GrassTasks::Set(cell, task.get());
 		}
-		if (!GrassWorkers::Get().Submit(manager, cell, task->Abort(), holder)) {
+		if (!GrassWorkers::Get().Submit(manager, cell, &task->GetRuntimeData().cancel, holder)) {
 			RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
-			if (!*task->Abort() && RE::AddCellGrassTask::Get(cell) == task) {
-				RE::AddCellGrassTask::Set(cell, nullptr);
-				RE::AddCellGrassTask::Queue(cell);
+			if (!task->GetRuntimeData().cancel && GrassTasks::Get(cell) == task) {
+				GrassTasks::Set(cell, nullptr);
+				RE::AddCellGrassTask::CreateGrassLoadTaskForCell(cell);
 			}
 		}
 	}

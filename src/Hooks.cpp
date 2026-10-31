@@ -696,7 +696,7 @@ namespace GrassControl
 			static void thunk(RE::TESObjectCELL* cell)
 			{
 				RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
-				if (!RE::AddCellGrassTask::Get(cell))
+				if (!GrassTasks::Get(cell))
 					Generation::OnGrassQueued();
 				func(cell);
 			}

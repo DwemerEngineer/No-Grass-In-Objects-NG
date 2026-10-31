@@ -1,14 +1,14 @@
 #include "GrassControl/AddCellGrassTask.h"
 
-namespace RE
+namespace GrassControl::GrassTasks
 {
-	NiPointer<AddCellGrassTask> AddCellGrassTask::Create(TESObjectCELL* cell)
+	RE::NiPointer<RE::AddCellGrassTask> Create(RE::TESObjectCELL* cell)
 	{
 		const auto* coordinates = cell->GetCoordinates();
 		if (!coordinates)
 			return {};
 
-		auto* task = static_cast<AddCellGrassTask*>(malloc(RuntimeDataOffset() + sizeof(RUNTIME_DATA)));
+		auto* task = static_cast<RE::AddCellGrassTask*>(RE::malloc(RuntimeDataOffset() + sizeof(RE::AddCellGrassTask::RUNTIME_DATA)));
 		if (!task)
 			return {};
 
@@ -17,40 +17,34 @@ namespace RE
 		queuedFileConstructor(task, GrassTaskPriority, nullptr);
 		stl::emplace_vtable(task);
 
-		task->GetRuntimeData() = { cell, coordinates->cellX, coordinates->cellY, false };
-		return NiPointer(task);
+		task->GetRuntimeData() = { cell, coordinates->cellX, coordinates->cellY, false, {} };
+		return RE::NiPointer(task);
 	}
 
-	AddCellGrassTask* AddCellGrassTask::FromAbort(bool* abort)
+	RE::AddCellGrassTask* FromCancel(bool* cancel)
 	{
-		return reinterpret_cast<AddCellGrassTask*>(reinterpret_cast<std::byte*>(abort) - RuntimeDataOffset() - offsetof(RUNTIME_DATA, abort));
+		return reinterpret_cast<RE::AddCellGrassTask*>(reinterpret_cast<std::byte*>(cancel) - RuntimeDataOffset() - offsetof(RE::AddCellGrassTask::RUNTIME_DATA, cancel));
 	}
 
-	NiPointer<AddCellGrassTask> AddCellGrassTask::Get(TESObjectCELL* cell)
+	RE::NiPointer<RE::AddCellGrassTask> Get(RE::TESObjectCELL* cell)
 	{
-		BSSpinLockGuard taskLock(cell->grassTaskLock);
-		const auto* data = cell->extraList.GetByType<ExtraCellGrassData>();
-		return data ? data->addGrassTask : NiPointer<AddCellGrassTask>();
+		RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
+		const auto* data = cell->extraList.GetByType<RE::ExtraCellGrassData>();
+		return data ? data->addGrassTask : RE::NiPointer<RE::AddCellGrassTask>();
 	}
 
-	void AddCellGrassTask::Set(TESObjectCELL* cell, AddCellGrassTask* task)
+	void Set(RE::TESObjectCELL* cell, RE::AddCellGrassTask* task)
 	{
-		BSSpinLockGuard taskLock(cell->grassTaskLock);
-		auto* data = cell->extraList.GetByType<ExtraCellGrassData>();
+		RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
+		auto* data = cell->extraList.GetByType<RE::ExtraCellGrassData>();
 		if (!data) {
 			if (!task)
 				return;
 
-			data = BSExtraData::Create<ExtraCellGrassData>();
+			data = RE::BSExtraData::Create<RE::ExtraCellGrassData>();
 			cell->extraList.Add(data);
 		}
 
 		data->addGrassTask.reset(task);
-	}
-
-	void AddCellGrassTask::DecRefCount()
-	{
-		if (InterlockedDecrement(reinterpret_cast<volatile long*>(&refCount)) == 0)
-			delete static_cast<BSTask*>(this);
 	}
 }

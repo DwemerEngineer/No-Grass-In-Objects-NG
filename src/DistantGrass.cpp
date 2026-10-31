@@ -253,12 +253,12 @@ namespace GrassControl::DistantGrass
 			return false;
 
 		RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
-		const auto task = RE::AddCellGrassTask::Get(cell);
-		if (!task || (taskAbort && task->Abort() != taskAbort))
+		const auto task = GrassTasks::Get(cell);
+		if (!task || (taskAbort && &task->GetRuntimeData().cancel != taskAbort))
 			return false;
 
-		*task->Abort() = true;
-		RE::AddCellGrassTask::Set(cell, nullptr);
+		task->GetRuntimeData().cancel = true;
+		GrassTasks::Set(cell, nullptr);
 		return true;
 	}
 
@@ -696,7 +696,7 @@ namespace GrassControl::DistantGrass
 			standIn = entry.standIn;
 		}
 
-		RE::AddCellGrassTask::Queue(standIn);
+		RE::AddCellGrassTask::CreateGrassLoadTaskForCell(standIn);
 
 		return true;
 	}
@@ -747,7 +747,7 @@ namespace GrassControl::DistantGrass
 			return;
 
 		RE::ClearGrassHandles(&cell->extraList);
-		RE::AddCellGrassTask::Set(cell, nullptr);
+		GrassTasks::Set(cell, nullptr);
 		discarded.push_back(cell);
 	}
 

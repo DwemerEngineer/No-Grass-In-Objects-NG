@@ -47,7 +47,7 @@ namespace GrassControl::Config
 	inline int FreezeTime = 90000;
 	inline bool Updating = false;
 	inline bool loadFromBSA = false;
-	inline bool ThreadedGrassPlacement = false;
+	inline bool ThreadedGrassPlacement = true;
 
 	// Derived from the PrecacheGrass marker beside the game executable.
 	inline bool GeneratingCache = false;

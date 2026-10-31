@@ -1,49 +1,15 @@
 #pragma once
 
-namespace RE
+namespace GrassControl::GrassTasks
 {
-	class AddCellGrassTask final : public QueuedFile
-	{
-	public:
-		inline static constexpr auto RTTI = RTTI_AddCellGrassTask;
-		inline static constexpr auto VTABLE = VTABLE_AddCellGrassTask;
+	// VR's BSTask is eight bytes larger, shifting the task's runtime data.
+	inline std::size_t RuntimeDataOffset() { return REL::Relocate<std::size_t>(0x38, 0x38, 0x40); }
 
-		struct RUNTIME_DATA
-		{
-			TESObjectCELL* cell;  // 00
-			std::int32_t cellX;   // 08
-			std::int32_t cellY;   // 0C
-			bool abort;           // 10
-		};
+	RE::NiPointer<RE::AddCellGrassTask> Create(RE::TESObjectCELL* cell);
 
-		AddCellGrassTask() = delete;
-		AddCellGrassTask(const AddCellGrassTask&) = delete;
-		AddCellGrassTask& operator=(const AddCellGrassTask&) = delete;
-		~AddCellGrassTask() override;  // 00
+	RE::AddCellGrassTask* FromCancel(bool* cancel);
 
-		// VR's BSTask is 8 bytes larger, which moves the task's own fields.
-		RUNTIME_DATA_ACCESSOR(RUNTIME_DATA, 0x38, 0x40);
+	RE::NiPointer<RE::AddCellGrassTask> Get(RE::TESObjectCELL* cell);
 
-		static std::size_t RuntimeDataOffset() { return REL::Relocate<std::size_t>(0x38, 0x38, 0x40); }
-
-		static NiPointer<AddCellGrassTask> Create(TESObjectCELL* cell);
-
-		static AddCellGrassTask* FromAbort(bool* abort);
-
-		static NiPointer<AddCellGrassTask> Get(TESObjectCELL* cell);
-
-		static void Set(TESObjectCELL* cell, AddCellGrassTask* task);
-
-		static void Queue(TESObjectCELL* cell)
-		{
-			static REL::Relocation<void (*)(TESObjectCELL*)> func{ RELOCATION_ID(13137, 13277) };
-			func(cell);
-		}
-
-		bool* Abort() { return &GetRuntimeData().abort; }
-
-		// Use the engine's deleting destructor when the final NiPointer releases the task.
-		void IncRefCount() { InterlockedIncrement(reinterpret_cast<volatile long*>(&refCount)); }
-		void DecRefCount();
-	};
+	void Set(RE::TESObjectCELL* cell, RE::AddCellGrassTask* task);
 }
