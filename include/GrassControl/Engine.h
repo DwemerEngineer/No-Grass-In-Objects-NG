@@ -2,24 +2,6 @@
 
 namespace RE
 {
-	inline void AddCellGrass(BGSGrassManager* manager, TESObjectCELL* cell, bool* abort)
-	{
-		static REL::Relocation<void (*)(BGSGrassManager*, TESObjectCELL*, bool*)> func{ RELOCATION_ID(15204, 15372) };
-		func(manager, cell, abort);
-	}
-
-	inline void RemoveCellGrass(BGSGrassManager* manager, TESObjectCELL* cell)
-	{
-		static REL::Relocation<void (*)(BGSGrassManager*, TESObjectCELL*)> func{ RELOCATION_ID(15207, 15375) };
-		func(manager, cell);
-	}
-
-	inline void LoadCellGrassFile(BGSGrassManager* manager, TESObjectCELL* cell)
-	{
-		static REL::Relocation<void (*)(BGSGrassManager*, TESObjectCELL*)> func{ RELOCATION_ID(15206, 15374) };
-		func(manager, cell);
-	}
-
 	// Writes the returned number of instances to manager->instanceData.
 	inline std::uint32_t CreateGrassPatch(BGSGrassManager* manager, CreateGrassParams* params)
 	{
@@ -45,18 +27,6 @@ namespace RE
 	{
 		static REL::Relocation<void (*)(ExtraDataList*)> func{ RELOCATION_ID(11931, 12070) };
 		func(extraList);
-	}
-
-	inline TESObjectLAND* GetLand(TESObjectCELL* cell)
-	{
-		static REL::Relocation<TESObjectLAND* (*)(TESObjectCELL*)> func{ RELOCATION_ID(18513, 18970) };
-		return func(cell);
-	}
-
-	inline void LoadLand(TESObjectLAND* land)
-	{
-		static REL::Relocation<void (*)(TESObjectLAND*, int, int)> func{ RELOCATION_ID(18331, 18747) };
-		func(land, 0, 1);
 	}
 
 	// Returns false when the point is outside the land's loaded data.
@@ -90,25 +60,11 @@ namespace RE
 		return func(tes, x, y);
 	}
 
-	// Creates missing cells; caller must hold the TES lock.
-	inline TESObjectCELL* GetWorldCell(TESWorldSpace* world, int x, int y)
-	{
-		static REL::Relocation<TESObjectCELL* (*)(TESWorldSpace*, std::int32_t, std::int32_t)> func{ RELOCATION_ID(20026, 20460) };
-		return func(world, x, y);
-	}
-
 	// Creates missing cells without loading or resetting their references.
 	inline TESObjectCELL* CreateCellAt(TESDataHandler* dataHandler, int x, int y, TESWorldSpace* world)
 	{
 		static REL::Relocation<TESObjectCELL* (*)(TESDataHandler*, int, int, TESWorldSpace*, bool)> func{ RELOCATION_ID(13620, 13718) };
 		return func(dataHandler, x, y, world, true);
-	}
-
-	inline void QueueCellLoad(TESWorldSpace* world, int x, int y)
-	{
-		static REL::Relocation<void (*)(std::uintptr_t, TESWorldSpace*, int, int, int)> func{ RELOCATION_ID(18150, 18541) };
-		static REL::Relocation<std::uintptr_t*> loader{ RELOCATION_ID(514741, 400899) };
-		func(*loader, world, x, y, 0);
 	}
 
 	inline void PositionPlayer(PlayerCharacter* player, const float* position, const float* rotation, TESObjectCELL* cell)

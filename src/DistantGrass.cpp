@@ -14,12 +14,22 @@ namespace GrassControl::DistantGrass
 {
 	bool GrassCacheIndex::Contains(std::string_view world, int x, int y)
 	{
+		if (world.empty())
+			return false;
+
 		std::call_once(scanned, [this] { Scan(); });
 
 		std::shared_lock lock(mutex);
 		const auto it = worlds.find(Lower(world));
 
 		return it != worlds.end() && it->second.contains(Key(x, y));
+	}
+
+	bool GrassCacheIndex::Contains(RE::TESObjectCELL& cell)
+	{
+		const auto* world = cell.GetRuntimeData().worldSpace;
+		const auto* coordinates = cell.GetCoordinates();
+		return world && coordinates && Contains(world->editorID.c_str(), coordinates->cellX, coordinates->cellY);
 	}
 
 	bool GrassCacheIndex::Empty()
@@ -110,11 +120,6 @@ namespace GrassControl::DistantGrass
 		return terrainLoad.compare_exchange_strong(from, to);
 	}
 
-	bool CellInfo::HasCacheFile(std::string_view world) const
-	{
-		return !world.empty() && gridState.cacheIndex.Contains(world, x, y);
-	}
-
 	CellInfoContainer::CellInfoContainer() :
 		grid(GridSide * GridSide)
 	{}
@@ -193,7 +198,7 @@ namespace GrassControl::DistantGrass
 	// Coordinate-created cells have no LAND form, so their terrain is loaded through the worldspace.
 	static void LoadTerrain(RE::TESObjectCELL* cell)
 	{
-		auto* land = RE::GetLand(cell);
+		auto* land = cell->GetLand();
 		if (!land || (land->data.flags.underlying() & LandDataLoaded) != 0)
 			return;
 
@@ -202,7 +207,7 @@ namespace GrassControl::DistantGrass
 				RE::OBJ_LAND::Flag::kLayers, RE::OBJ_LAND::Flag::kMPCD);
 		}
 
-		RE::LoadLand(land);
+		land->LoadVertices(false, true);
 	}
 
 	void LoadDistantCellNow(std::uintptr_t ws, int x, int y)
@@ -270,9 +275,7 @@ namespace GrassControl::DistantGrass
 		if (quickLoad)
 			return true;
 
-		const auto* world = cell->GetRuntimeData().worldSpace;
-		const auto* coordinates = cell->GetCoordinates();
-		if (globals::AllowLoadGrass() && world && coordinates && gridState.cacheIndex.Contains(world->editorID.c_str(), coordinates->cellX, coordinates->cellY))
+		if (globals::AllowLoadGrass() && gridState.cacheIndex.Contains(*cell))
 			return true;
 
 		const auto* land = cell->GetRuntimeData().cellLand;
@@ -295,7 +298,7 @@ namespace GrassControl::DistantGrass
 
 		{
 			RE::BSSpinLockGuard lock(const_cast<RE::TES*>(tes)->lock);
-			cell = RE::GetWorldCell(ws, x, y);
+			cell = ws->LoadCell(static_cast<std::int16_t>(x), static_cast<std::int16_t>(y));
 		}
 
 		if (IsValidLoadedCell(cell, quickLoad))
@@ -319,7 +322,7 @@ namespace GrassControl::DistantGrass
 		if (diffX <= uHalf && diffY <= uHalf)
 			return GrassState::Active;
 
-		return canLoadFromFile && !Config::GrassCliffs && c.HasCacheFile(world) ? GrassState::Active : GrassState::Lod;
+		return canLoadFromFile && !Config::GrassCliffs && gridState.cacheIndex.Contains(world, c.x, c.y) ? GrassState::Active : GrassState::Lod;
 	}
 
 	void RemoveCellGrass(RE::TESObjectCELL* cell)
@@ -353,7 +356,7 @@ namespace GrassControl::DistantGrass
 		{
 			RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
 			ReattachRetiredGrass(cell);
-			RE::RemoveCellGrass(RE::BGSGrassManager::GetSingleton(), cell);
+			RE::BGSGrassManager::GetSingleton()->RemoveCellGrass(cell);
 			CliffSurfaces::Forget(cell->GetFormID());
 		}
 		{
@@ -500,7 +503,7 @@ namespace GrassControl::DistantGrass
 
 				// Cell-loading callbacks acquire gridState.cellMapMutex while the engine holds its loader lock.
 				lock.unlock();
-				RE::QueueCellLoad(world, x, y);
+				RE::ExteriorCellLoader::GetSingleton()->QueueCellLoad(world, static_cast<std::int16_t>(x), static_cast<std::int16_t>(y), false);
 				if (info->AdvanceTerrain(TerrainLoad::Queued, TerrainLoad::None))
 					info->loadingTerrain = false;
 			}
@@ -597,7 +600,7 @@ namespace GrassControl::DistantGrass
 				ClearCellAddGrassTask(cell);
 				RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
 				ReattachRetiredGrass(cell);
-				RE::RemoveCellGrass(RE::BGSGrassManager::GetSingleton(), cell);
+				RE::BGSGrassManager::GetSingleton()->RemoveCellGrass(cell);
 				CliffSurfaces::Forget(cell->GetFormID());
 			}
 		}
@@ -715,7 +718,7 @@ namespace GrassControl::DistantGrass
 
 		auto& entry = it->second;
 		if (entry.state == State::Loading && entry.standIn) {
-			RE::LoadCellGrassFile(RE::BGSGrassManager::GetSingleton(), entry.standIn);
+			RE::BGSGrassManager::GetSingleton()->AddCellGrassFromFile(entry.standIn);
 			entry.state = State::Loaded;
 		} else if (entry.state != State::Loaded) {
 			Discard(entry);
@@ -731,7 +734,7 @@ namespace GrassControl::DistantGrass
 			return false;
 		case State::Loaded:
 			if (entry.standIn)
-				RE::RemoveCellGrass(RE::BGSGrassManager::GetSingleton(), entry.standIn);
+				RE::BGSGrassManager::GetSingleton()->RemoveCellGrass(entry.standIn);
 			Discard(entry);
 			entry.state = State::None;
 			return true;
@@ -786,7 +789,7 @@ namespace GrassControl::DistantGrass
 			if (wanted == GrassState::None || info->have == wanted || info->have == GrassState::Active)
 				return true;
 
-			const bool fromCache = canLoadGrass && info->HasCacheFile(world->editorID.c_str());
+			const bool fromCache = canLoadGrass && gridState.cacheIndex.Contains(*cell);
 			if (wanted == GrassState::Active && !fromCache && !PhysicsRaycast::GetSingleton().CanFilterCell(*cell))
 				return false;
 

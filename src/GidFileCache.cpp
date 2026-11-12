@@ -301,7 +301,7 @@ namespace GrassControl::Generation
 		RE::TESObjectCELL* cell = nullptr;
 		{
 			RE::BSSpinLockGuard lock(RE::TES::GetSingleton()->lock);
-			cell = RE::GetWorldCell(world, x, y);
+			cell = world->LoadCell(static_cast<std::int16_t>(x), static_cast<std::int16_t>(y));
 		}
 		const auto* coordinates = cell ? cell->GetCoordinates() : nullptr;
 		if (!coordinates || cell->IsDeleted())

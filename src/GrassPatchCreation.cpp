@@ -102,9 +102,7 @@ namespace GrassControl
 			return;
 		}
 
-		const auto* world = cell->GetRuntimeData().worldSpace;
-		const auto* coordinates = cell->GetCoordinates();
-		const bool fromCache = globals::AllowLoadGrass() && world && coordinates && DistantGrass::gridState.cacheIndex.Contains(world->editorID.c_str(), coordinates->cellX, coordinates->cellY);
+		const bool fromCache = globals::AllowLoadGrass() && DistantGrass::gridState.cacheIndex.Contains(*cell);
 
 		auto& workers = DistantGrass::GrassWorkers::Get();
 		const auto block = workers.AcquireBlock(cell);

@@ -51,7 +51,7 @@ namespace GrassControl::DistantGrass
 
 		if (!drop.empty()) {
 			attach(drop);
-			RE::RemoveCellGrass(manager, cell);
+			manager->RemoveCellGrass(cell);
 		}
 
 		if (!keep.empty())
@@ -85,8 +85,7 @@ namespace GrassControl::DistantGrass
 			return;
 		}
 
-		const auto* world = cell->GetRuntimeData().worldSpace;
-		const bool fromCache = globals::AllowLoadGrass() && world && info->HasCacheFile(world->editorID.c_str());
+		const bool fromCache = globals::AllowLoadGrass() && gridState.cacheIndex.Contains(*cell);
 		const bool requireCollision = wanted == GrassState::Active && GrassPatchCreation::NeedsCollision(manager, fromCache);
 		// Native placement can enter the loader while its callbacks need the map lock.
 		lock.unlock();
@@ -112,7 +111,7 @@ namespace GrassControl::DistantGrass
 
 		const auto unavailableBefore = PhysicsRaycast::UnavailableQueries();
 		if (have == GrassState::None) {
-			RE::AddCellGrass(manager, cell, abort);
+			manager->AddCellGrass(cell, abort);
 		} else {
 			auto& state = State();
 			ReattachRetiredGrass(cell);
@@ -122,7 +121,7 @@ namespace GrassControl::DistantGrass
 				retired.entries = TakeGrassHandles(cell);
 				retired.deadline = std::chrono::steady_clock::now() + RetiredGrassTimeout;
 			}
-			RE::AddCellGrass(manager, cell, abort);
+			manager->AddCellGrass(cell, abort);
 			if (*abort)
 				ReattachRetiredGrass(cell);
 			state.swaps.fetch_add(1, std::memory_order_relaxed);

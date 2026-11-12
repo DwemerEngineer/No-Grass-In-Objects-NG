@@ -80,6 +80,7 @@ namespace GrassControl::DistantGrass
 	{
 	public:
 		bool Contains(std::string_view world, int x, int y);
+		bool Contains(RE::TESObjectCELL& cell);
 
 		bool Empty();
 
@@ -149,8 +150,6 @@ namespace GrassControl::DistantGrass
 			if (AdvanceTerrain(TerrainLoad::Queued, TerrainLoad::None) || AdvanceTerrain(TerrainLoad::Claimed, TerrainLoad::None))
 				loadingTerrain = false;
 		}
-
-		[[nodiscard]] bool HasCacheFile(std::string_view world) const;
 	};
 
 	class CellInfoContainer final
