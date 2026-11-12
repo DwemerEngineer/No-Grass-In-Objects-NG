@@ -104,7 +104,7 @@ namespace GrassControl
 
 		const bool fromCache = globals::AllowLoadGrass() && DistantGrass::gridState.cacheIndex.Contains(*cell);
 
-		auto& workers = DistantGrass::GrassWorkers::Get();
+		auto& workers = DistantGrass::GetCreationState().workers;
 		const auto block = workers.AcquireBlock(cell);
 		const stl::scope_exit releaseBlock([&] {
 			ReleaseNativePlacement();

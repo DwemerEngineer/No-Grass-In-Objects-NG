@@ -807,7 +807,7 @@ namespace GrassControl::DistantGrass
 		if (gridState.cellGrid)
 			gridState.cellGrid->QueueDistantCells(nullptr, 0, 0, 0, 0);
 
-		ResetGrassModelPrefetch();
+		GetCreationState().modelPrefetch.Reset();
 	}
 
 	void Update()

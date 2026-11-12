@@ -9,7 +9,6 @@ namespace RE
 		return func(manager, params);
 	}
 
-	// Creates missing shapes; cells with the same keys share a shape.
 	inline BSMultiStreamInstanceTriShape* LoadGrassType(BGSGrassManager* manager, GrassParam* param, std::uint32_t cellKeyX, std::uint32_t cellKeyY, std::uint64_t* typeKey, BSFixedString* modelKey)
 	{
 		static REL::Relocation<BSMultiStreamInstanceTriShape* (*)(BGSGrassManager*, GrassParam*, std::uint32_t, std::uint32_t, std::uint64_t*, BSFixedString*)> func{ RELOCATION_ID(15214, 15383) };
@@ -60,11 +59,79 @@ namespace RE
 		return func(tes, x, y);
 	}
 
-	// Creates missing cells without loading or resetting their references.
 	inline TESObjectCELL* CreateCellAt(TESDataHandler* dataHandler, int x, int y, TESWorldSpace* world)
 	{
 		static REL::Relocation<TESObjectCELL* (*)(TESDataHandler*, int, int, TESWorldSpace*, bool)> func{ RELOCATION_ID(13620, 13718) };
 		return func(dataHandler, x, y, world, true);
+	}
+
+	inline BSResource::ID MakeGrassModelKey(const char* model)
+	{
+		static REL::Relocation<const char* (*)(char*, std::uint32_t, const char*, const char*)> prepareName{ RELOCATION_ID(68471, 69822) };
+		static REL::Relocation<BSResource::ID* (*)(BSResource::ID*, const char*)> makeID{ RELOCATION_ID(68631, 69971) };
+		static REL::Relocation<std::uint32_t*> grassDirectory{ RELOCATION_ID(514429, 400575) };
+
+		char modelPath[260];
+		BSResource::ID key;
+		makeID(&key, prepareName(modelPath, sizeof(modelPath), model, "meshes\\"));
+		key.dir = *grassDirectory;
+		return key;
+	}
+
+	using ModelEntryDB = BSResource::EntryDBBase<BSResource::EntryDBTraits<BSModelDB::DBTraits, ModelDBHandle::U_EntryDB>>;
+
+	inline ModelEntryDB* ModelEntryDatabase()
+	{
+		static REL::Relocation<ModelDBHandle::U_EntryDB**> database{ RELOCATION_ID(514145, 400273) };
+		return *database;
+	}
+
+	inline ModelDBHandle::U_Entry* DemandGrassModel(const BSResource::ID& key)
+	{
+		ModelDBHandle::U_Entry* loadedEntry = nullptr;
+
+		if (REL::Module::IsSE()) {
+			static REL::Relocation<std::uint32_t (*)(const BSResource::ID*, ModelDBHandle::U_Entry**)> DemandModel{ RELOCATION_ID(15257, 0) };
+			DemandModel(&key, &loadedEntry);
+
+			return loadedEntry;
+		}
+
+		// DemandGrassModel is inlined in AE
+		static REL::Relocation<bool (*)(ModelEntryDB*, const BSResource::ID*, ModelDBHandle::U_Entry**, bool)> acquire{ RELOCATION_ID(0, 15430) };
+		static REL::Relocation<std::uint32_t (*)(ModelEntryDB*, std::uint32_t, ModelDBHandle::U_Entry*, ModelDBHandle::U_Entry**, const BSModelDB::DBTraits::ArgsType*)> load{ RELOCATION_ID(0, 15420) };
+
+		auto* entryDatabase = ModelEntryDatabase();
+		ModelDBHandle::U_Entry* cacheEntry = nullptr;
+
+		if (!acquire(entryDatabase, &key, &cacheEntry, false) || !cacheEntry)
+			return nullptr;
+
+		const BSModelDB::DBTraits::ArgsType loadArgs{
+			.LODmult = 0,
+			.texLoadLevel = 3,
+			.unk8 = false,
+			.unk9 = false,
+			.unkA = false,
+			.postProcess = false
+		};
+		load(entryDatabase, 0, cacheEntry, &loadedEntry, &loadArgs);
+
+		return loadedEntry;
+	}
+
+	inline void ReleaseGrassModel(ModelDBHandle::U_Entry* entry)
+	{
+		if (!entry)
+			return;
+
+		if (REL::Module::IsAE()) {
+			static REL::Relocation<void (*)(ModelDBHandle::U_Entry*)> release{ RELOCATION_ID(11275, 15443) };
+			release(entry);
+		} else {
+			static REL::Relocation<void (*)(ModelEntryDB*, ModelDBHandle::U_Entry*)> release{ RELOCATION_ID(11275, 15443) };
+			release(ModelEntryDatabase(), entry);
+		}
 	}
 
 	inline void PositionPlayer(PlayerCharacter* player, const float* position, const float* rotation, TESObjectCELL* cell)
@@ -103,7 +170,7 @@ namespace RE
 		return func(storage, halfExtents);
 	}
 
-	// Anniversary Edition's box constructor leaves dimensions unset.
+	// AE's box constructor leaves dimensions unset.
 	inline void InitializeBoxShape(bhkShape* shape, const void* boxInfo)
 	{
 		static REL::Relocation<void (*)(bhkShape*, const void*)> func{ RELOCATION_ID(76940, 78815) };
@@ -116,7 +183,6 @@ namespace RE
 		return func(storage, shape, transform, filter);
 	}
 
-	// Event types match BSThread: 0 for start, 1 for exit.
 	inline void SendHavokThreadEvent(const void* event)
 	{
 		static REL::Relocation<void (*)(void*, const void*)> func{ RELOCATION_ID(77215, 79103) };

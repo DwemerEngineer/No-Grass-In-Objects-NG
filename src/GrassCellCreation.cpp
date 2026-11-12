@@ -113,7 +113,7 @@ namespace GrassControl::DistantGrass
 		if (have == GrassState::None) {
 			manager->AddCellGrass(cell, abort);
 		} else {
-			auto& state = State();
+			auto& state = GetCreationState();
 			ReattachRetiredGrass(cell);
 			{
 				std::scoped_lock retiredLock(state.retiredMutex);
@@ -173,11 +173,6 @@ namespace GrassControl::DistantGrass
 			return INT64_MIN;
 
 		return (static_cast<std::int64_t>(GrassPatchCreation::ShapeCoordinate(coordinates->cellX)) << 32) | static_cast<std::uint32_t>(GrassPatchCreation::ShapeCoordinate(coordinates->cellY));
-	}
-
-	GrassWorkers& GrassWorkers::Get()
-	{
-		return State().workers;
 	}
 
 	GrassWorkers::~GrassWorkers()
@@ -260,12 +255,6 @@ namespace GrassControl::DistantGrass
 			Work();
 
 		return true;
-	}
-
-	bool GrassWorkers::Busy()
-	{
-		std::scoped_lock lock(mutex);
-		return running.load(std::memory_order_relaxed) > 0 || !jobs.empty();
 	}
 
 	std::optional<GrassWorkers::Job> GrassWorkers::Take()
@@ -387,11 +376,6 @@ namespace GrassControl::DistantGrass
 		return block;
 	}
 
-	GrassModelPrefetch& GrassModelPrefetch::Get()
-	{
-		return State().modelPrefetch;
-	}
-
 	void GrassModelPrefetch::Request(RE::TESObjectCELL* cell)
 	{
 		auto* land = cell ? cell->GetRuntimeData().cellLand : nullptr;
@@ -439,49 +423,49 @@ namespace GrassControl::DistantGrass
 
 	void GrassModelPrefetch::Reset()
 	{
-		std::vector<RE::NiPointer<RE::NiNode>> release;
-		std::scoped_lock lock(mutex);
-		++generation;
-		jobs.clear();
-		requested.clear();
-		release.swap(loaded);
+		std::vector<RE::ModelDBHandle::U_Entry*> modelsToRelease;
+		{
+			std::scoped_lock lock(mutex);
+			++generation;
+			jobs.clear();
+			requested.clear();
+			modelsToRelease.swap(retainedModels);
+		}
+
+		for (auto* modelEntry : modelsToRelease)
+			RE::ReleaseGrassModel(modelEntry);
 	}
 
 	void GrassModelPrefetch::Work(std::stop_token stop)
 	{
 		for (;;) {
-			std::string model;
-			std::uint64_t started;
+			std::string modelPath;
+			std::uint64_t requestGeneration;
 			{
 				std::unique_lock lock(mutex);
-				if (!ready.wait(lock, stop, [&] { return !jobs.empty(); }))
+				if (!ready.wait(lock, stop, [&] { return !jobs.empty(); }) || stop.stop_requested())
 					return;
 
-				model = std::move(jobs.front());
+				modelPath = std::move(jobs.front());
 				jobs.pop_front();
-				started = generation;
+				requestGeneration = generation;
 			}
 
-			while (GrassWorkers::Get().Busy() && !stop.stop_requested())
-				std::this_thread::sleep_for(std::chrono::milliseconds(20));
-
-			RE::NiPointer<RE::NiNode> node;
-			if (auto* manager = RE::BGSGrassManager::GetSingleton()) {
-				RE::BSWriteLockGuard grassLock(manager->grassTypeLock);
-				RE::BSModelDB::DBTraits::ArgsType args;
-
-				if (RE::BSModelDB::Demand(model.c_str(), node, args) != RE::BSResource::ErrorCode::kNone)
-					node.reset();
-			}
-
-			// Let waiting grass workers take the lock between models.
-			std::this_thread::yield();
-			if (!node)
+			// The model cache is thread-safe, so prefetching never takes the grass lock.
+			const auto modelKey = RE::MakeGrassModelKey(modelPath.c_str());
+			auto* modelEntry = RE::DemandGrassModel(modelKey);
+			if (!modelEntry)
 				continue;
 
-			std::scoped_lock lock(mutex);
-			if (started == generation)
-				loaded.push_back(std::move(node));
+			{
+				std::scoped_lock lock(mutex);
+				if (requestGeneration == generation) {
+					retainedModels.push_back(modelEntry);
+					continue;
+				}
+			}
+
+			RE::ReleaseGrassModel(modelEntry);
 		}
 	}
 
@@ -550,7 +534,7 @@ namespace GrassControl::DistantGrass
 
 	void ReattachRetiredGrass(RE::TESObjectCELL* cell)
 	{
-		auto& state = State();
+		auto& state = GetCreationState();
 		RetiredGrass retired;
 		{
 			std::scoped_lock retiredLock(state.retiredMutex);
@@ -567,7 +551,7 @@ namespace GrassControl::DistantGrass
 
 	void RetireReplacedGrass()
 	{
-		auto& state = State();
+		auto& state = GetCreationState();
 		std::vector<RE::TESObjectCELL*> cells;
 		{
 			std::scoped_lock retiredLock(state.retiredMutex);
@@ -620,12 +604,7 @@ namespace GrassControl::DistantGrass
 
 	void ReportStatistics()
 	{
-		logger::info("Grass swaps: {}", State().swaps.load());
-	}
-
-	void ResetGrassModelPrefetch()
-	{
-		GrassModelPrefetch::Get().Reset();
+		logger::info("Grass swaps: {}", GetCreationState().swaps.load());
 	}
 
 	void QueueGrassCreation(RE::TESObjectCELL* cell)
@@ -644,8 +623,6 @@ namespace GrassControl::DistantGrass
 			return;
 		}
 
-		GrassModelPrefetch::Get().Request(cell);
-
 		// Retain a native task for cancellation while bypassing the IOManager queue.
 		RE::NiPointer<RE::AddCellGrassTask> task;
 		{
@@ -659,7 +636,9 @@ namespace GrassControl::DistantGrass
 
 			GrassTasks::Set(cell, task.get());
 		}
-		if (!GrassWorkers::Get().Submit(manager, cell, &task->GetRuntimeData().cancel, holder)) {
+
+		GetCreationState().modelPrefetch.Request(cell);
+		if (!GetCreationState().workers.Submit(manager, cell, &task->GetRuntimeData().cancel, holder)) {
 			RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
 			if (!task->GetRuntimeData().cancel && GrassTasks::Get(cell) == task) {
 				GrassTasks::Set(cell, nullptr);
@@ -687,14 +666,14 @@ namespace GrassControl::DistantGrass
 			return;
 
 		if (abort && UseGrassWorkers(manager, cell)) {
-			if (GrassWorkers::Get().Submit(manager, cell, abort, holder))
+			if (GetCreationState().workers.Submit(manager, cell, abort, holder))
 				return;
 
 			if (*abort)
 				return;
 		}
 
-		auto& workers = GrassWorkers::Get();
+		auto& workers = GetCreationState().workers;
 		const auto block = workers.AcquireBlock(cell);
 		const stl::scope_exit releaseBlock([&] { workers.ReleaseBlock(block); });
 		holder = {};

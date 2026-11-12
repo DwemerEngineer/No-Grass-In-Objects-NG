@@ -9,7 +9,6 @@ namespace GrassControl::DistantGrass
 	public:
 		inline static constexpr std::size_t ThreadCount = 4;
 
-		static GrassWorkers& Get();
 		~GrassWorkers();
 
 		// Cells sharing engine grass shapes must not build concurrently.
@@ -20,8 +19,6 @@ namespace GrassControl::DistantGrass
 
 		// Success retains the task and releases the holder before dispatch; failure leaves the cell held.
 		bool Submit(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, bool* abort, CellHolder& holder);
-
-		[[nodiscard]] bool Busy();
 
 	private:
 		struct Job
@@ -60,12 +57,10 @@ namespace GrassControl::DistantGrass
 		oneapi::tbb::task_group tasks{ context };
 	};
 
-	// Model prefetch shares the grass manager lock with LoadGrassType because model streams cannot load concurrently.
+	// Retains grass-model handles so placement avoids disk access under the grass lock.
 	class GrassModelPrefetch
 	{
 	public:
-		static GrassModelPrefetch& Get();
-
 		// The cell's land must remain loaded during this call.
 		void Request(RE::TESObjectCELL* cell);
 
@@ -79,7 +74,7 @@ namespace GrassControl::DistantGrass
 		std::condition_variable_any ready;
 		std::deque<std::string> jobs;
 		std::unordered_set<std::string> requested;
-		std::vector<RE::NiPointer<RE::NiNode>> loaded;
+		std::vector<RE::ModelDBHandle::U_Entry*> retainedModels;
 		std::uint64_t generation = 0;
 		std::jthread thread;  // Declared last so the worker stops before the queue it reads.
 	};
@@ -134,7 +129,7 @@ namespace GrassControl::DistantGrass
 		GrassModelPrefetch modelPrefetch;
 	};
 
-	inline CreationState& State()
+	inline CreationState& GetCreationState()
 	{
 		static CreationState state;
 		return state;
@@ -149,8 +144,6 @@ namespace GrassControl::DistantGrass
 
 	// Main thread only, after the engine advances fade alphas.
 	void RetireReplacedGrass();
-
-	void ResetGrassModelPrefetch();
 
 	void ReportStatistics();
 }
