@@ -85,7 +85,7 @@ namespace GrassControl::Config
 					return;
 				}
 
-				// CREATE_NEW cannot truncate a file supplied by the VFS or a competing writer.
+				// CREATE_NEW preserves files supplied by the VFS or another writer
 				if (!WriteSettings(error) && error != std::errc::file_exists) {
 					return;
 				}

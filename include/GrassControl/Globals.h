@@ -26,7 +26,7 @@ namespace GrassControl::globals
 		return setting;
 	}
 
-	// Initialize before installing hooks that read these settings.
+	// Initialize before installing hooks that use these settings
 	inline void OnInit()
 	{
 		settings::allowLoadGrass = FindSetting("bAllowLoadGrass:Grass");

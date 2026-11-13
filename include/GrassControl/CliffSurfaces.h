@@ -53,7 +53,7 @@ namespace GrassControl::CliffSurfaces
 				loadOrder.emplace(file, loadOrder.size() + 1);
 
 			const auto priority = [&](const RE::TESLandTexture* texture) {
-				// GetFile() returns the winning override's plugin.
+				// GetFile() identifies the winning override
 				const auto it = loadOrder.find(texture->GetFile());
 				return std::pair{ !texture->textureGrassList.empty(), it != loadOrder.end() ? it->second : 0 };
 			};
@@ -81,7 +81,7 @@ namespace GrassControl::CliffSurfaces
 		return index;
 	}
 
-	// Cache results only after every eligible cliff has loaded its 3D.
+	// Cache only after all eligible cliffs have loaded 3D
 	std::vector<Surface> Get(RE::TESObjectCELL* cell);
 
 	void Forget(RE::FormID cell);

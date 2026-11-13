@@ -29,10 +29,10 @@ namespace GrassControl
 		std::unordered_map<RE::FormID, CliffObject> cliffObjects;
 		std::unordered_map<RE::FormID, PartIgnoredObject> partIgnoredObjects;
 
-		// Exempt candidates bypass both texture and collision filtering.
+		// Exempt candidates skip texture and collision checks
 		bool IsExempt(RE::TESObjectLAND* land, float x, float y, float z, const RE::GrassParam* param) const;
 
-		// Reads the loaded-cell grid; do not call from placement workers.
+		// Loaded-cell grid access is not safe on placement workers
 		bool OnBlockedTexture(float x, float y, float z) const;
 
 		bool IsCliff(RE::FormID formID) const;
@@ -41,7 +41,7 @@ namespace GrassControl
 
 		bool IsCliffAt(RE::FormID formID, RE::ObjectRefHandle reference, const RE::NiPoint3& point) const;
 
-		// Checks collision only; callers apply texture filtering separately.
+		// Collision only, texture filtering belongs to the caller
 		bool CanPlaceGrass(RE::TESObjectLAND* land, float x, float y, float z, RE::GrassParam* param, bool ignoreCliffs) const;
 	};
 }

@@ -4,7 +4,7 @@ namespace GrassControl::Util
 {
 	namespace Files
 	{
-		// Logical paths only: resolving backing paths would bypass mod-manager mappings.
+		// Use logical paths to preserve mod-manager mappings
 		inline std::filesystem::path GamePath(const std::filesystem::path& relative)
 		{
 			static const auto root = [] {
@@ -189,7 +189,7 @@ namespace GrassControl::Util
 	inline constexpr std::size_t MaxSceneObjects = 4096;
 	inline constexpr std::size_t MaxSceneVertices = 262144;
 
-	// Captured vertices are in world space and remain usable after the scene graph is unlocked.
+	// World-space vertices owned independently of the scene graph
 	struct ShapeSnapshot
 	{
 		struct Shape
@@ -202,7 +202,7 @@ namespace GrassControl::Util
 		std::vector<Shape> shapes;
 	};
 
-	// Caller retains the attached root and holds the renderer lock.
+	// Caller retains the attached root and holds the renderer lock
 	std::optional<ShapeSnapshot> CaptureShapes(RE::NiAVObject* root);
 
 	const ShapeSnapshot::Shape* ClosestShape(const ShapeSnapshot& snapshot, const RE::NiPoint3& position);

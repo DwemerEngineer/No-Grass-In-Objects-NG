@@ -6,7 +6,7 @@
 
 namespace GrassControl::CliffSurfaces
 {
-	// Match copied textures by file name when their directory differs from the landscape texture.
+	// Match copied textures by filename if the directory differs
 	static RE::TESLandTexture* LandTextureFor(std::string_view texturePath)
 	{
 		const auto& index = GetTextureIndex();
@@ -45,7 +45,7 @@ namespace GrassControl::CliffSurfaces
 		if (!property || property->flags.any(kSkinned, kDecal, kDynamicDecal, kTreeAnim))
 			return;
 
-		// Cliffs blend into the landscape with vertex alpha and alpha-tested edges, so only see-through blended shapes are skipped.
+		// Keep vertex-alpha and alpha-tested cliff edges, but skip translucent shapes
 		if (const auto* alpha = runtime.alphaProperty.get(); alpha && alpha->GetAlphaBlending() && !alpha->GetAlphaTesting())
 			return;
 
@@ -78,7 +78,7 @@ namespace GrassControl::CliffSurfaces
 		};
 		cell->ForEachReference(retain);
 
-		// Persistent references live in the worldspace's persistent cell, so the grid cell only finds them by position.
+		// Persistent references belong to the worldspace's persistent cell and must be found by position
 		const auto* world = cell->GetRuntimeData().worldSpace;
 		if (const auto* persistent = world ? world->persistentCell : nullptr) {
 			persistent->ForEachReference([&](RE::TESObjectREFR* reference) {

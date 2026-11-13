@@ -39,7 +39,7 @@ namespace GrassControl::ObjectHandler
 					std::erase(str, '~');
 					blockedShapes.insert(str);
 				} else if (Util::CaseInsensitiveString::Equal{}(str, "Steep")) {
-					// Steep classifies the cliff; it is not a shape name.
+					// Steep classifies the whole cliff rather than a shape
 					continue;
 				} else {
 					allowedShapes.insert(str);

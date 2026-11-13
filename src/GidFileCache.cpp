@@ -91,7 +91,7 @@ namespace GrassControl::Generation
 		if (!stepCell)
 			return;
 
-		// A dispatched grid can omit cells without creating or aborting a grass task.
+		// Grid dispatch can omit cells without creating or aborting their grass tasks
 		int unfinished = 0;
 		for (int x = stepCell->first - uHalf; x <= stepCell->first + uHalf; ++x) {
 			for (int y = stepCell->second - uHalf; y <= stepCell->second + uHalf; ++y) {
@@ -205,7 +205,7 @@ namespace GrassControl::Generation
 		if (fixedDimensions)
 			logger::info("{}: generating within the fixed grid centered at ({}, {})", name, world->fixedCenter.x, world->fixedCenter.y);
 
-		// Exterior CELL records are loaded on demand, so the world's runtime cell map is incomplete.
+		// Exterior CELL records load on demand, leaving the runtime cell map incomplete
 		if (const auto* files = world->sourceFiles.array) {
 			RE::BSSpinLockGuard lock(RE::TES::GetSingleton()->lock);
 			for (auto* file : *files) {
@@ -216,7 +216,7 @@ namespace GrassControl::Generation
 				for (int x = -GridHalf; x <= GridHalf; ++x) {
 					lastActivity = GetTickCount64();
 					for (int y = -GridHalf; y <= GridHalf; ++y) {
-						// Moving a fixed world's grid can detach portal nodes still referenced by its lights.
+						// Moving a fixed world's grid can detach portal nodes still used by lights
 						if (fixedDimensions && (std::abs(x - world->fixedCenter.x) > uHalf || std::abs(y - world->fixedCenter.y) > uHalf))
 							continue;
 
@@ -267,7 +267,6 @@ namespace GrassControl::Generation
 			MarkCell(worlds.back().name, x, y);
 	}
 
-	// The pending cell whose loaded grid covers the most other pending cells.
 	std::pair<int, int> CacheGenerator::NextCell() const
 	{
 		std::pair<int, int> best{ 0, 0 };
@@ -327,7 +326,7 @@ namespace GrassControl::Generation
 			return true;
 		};
 
-		// The fail count is written before moving, so a cell that crashes the game is skipped after enough attempts.
+		// Record the attempt before moving so crashes count toward MaxFailures
 		std::error_code error;
 		bool saved = Util::Files::UpdateText(failFile, countFailure, error);
 
@@ -449,7 +448,7 @@ namespace GrassControl::Generation
 		stepBuildMicroseconds += std::chrono::duration_cast<std::chrono::microseconds>(buildTime).count();
 		++stepBuiltCells;
 
-		// Start publishes the generator before the running state.
+		// Start creates the generator before publishing RunState::Running
 		if (runState == RunState::Running) {
 			if (!*abort && cell) {
 				const auto* world = cell->GetRuntimeData().worldSpace;

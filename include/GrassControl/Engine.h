@@ -2,7 +2,7 @@
 
 namespace RE
 {
-	// Writes the returned number of instances to manager->instanceData.
+	// Writes the returned instance count to manager->instanceData
 	inline std::uint32_t CreateGrassPatch(BGSGrassManager* manager, CreateGrassParams* params)
 	{
 		static REL::Relocation<std::uint32_t (*)(BGSGrassManager*, CreateGrassParams*)> func{ RELOCATION_ID(15212, 15381) };
@@ -15,7 +15,7 @@ namespace RE
 		return func(manager, param, cellKeyX, cellKeyY, typeKey, modelKey);
 	}
 
-	// Contains 512 entries indexed by the engine's slope-angle conversion.
+	// Indexed by the engine's slope-angle conversion
 	inline const float* GrassSlopeTable()
 	{
 		static REL::Relocation<const float*> table{ RELOCATION_ID(523934, 410514) };
@@ -28,7 +28,7 @@ namespace RE
 		func(extraList);
 	}
 
-	// Returns false when the point is outside the land's loaded data.
+	// Returns false outside the land's loaded data
 	inline bool GetLandCoordData(TESObjectLAND* land, void* coordData, const NiPoint3* position, std::uint32_t flags)
 	{
 		static REL::Relocation<bool (*)(TESObjectLAND*, void*, const NiPoint3*, std::uint32_t)> func{ RELOCATION_ID(18338, 18754) };
@@ -170,7 +170,7 @@ namespace RE
 		return func(storage, halfExtents);
 	}
 
-	// AE's box constructor leaves dimensions unset.
+	// AE's box constructor leaves dimensions unset
 	inline void InitializeBoxShape(bhkShape* shape, const void* boxInfo)
 	{
 		static REL::Relocation<void (*)(bhkShape*, const void*)> func{ RELOCATION_ID(76940, 78815) };

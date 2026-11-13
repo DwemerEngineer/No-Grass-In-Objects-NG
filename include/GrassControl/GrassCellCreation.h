@@ -11,13 +11,13 @@ namespace GrassControl::DistantGrass
 
 		~GrassWorkers();
 
-		// Cells sharing engine grass shapes must not build concurrently.
+		// Serialize builds that share engine grass shapes
 		std::int64_t AcquireBlock(const RE::TESObjectCELL* cell);
 
-		// The captured key remains valid if cancellation unloads the cell before release.
+		// The block key remains valid even if cancellation unloads the cell
 		void ReleaseBlock(std::int64_t block);
 
-		// Success retains the task and releases the holder before dispatch; failure leaves the cell held.
+		// Releases the holder on success and leaves it held on failure
 		bool Submit(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, bool* abort, CellHolder& holder);
 
 	private:
@@ -29,12 +29,12 @@ namespace GrassControl::DistantGrass
 			std::int64_t block;
 			int x;
 			int y;
-			bool reserved = true;  // False when the block could not be reserved; the job is only deferred.
+			bool reserved = true;  // Unreserved jobs are deferred
 		};
 
 		std::int64_t GrassBlockOf(const RE::TESObjectCELL* cell) const;
 
-		// Caller holds mutex; reserves the nearest available block.
+		// Caller holds mutex
 		std::optional<Job> Take();
 
 		bool Dispatch();
@@ -57,14 +57,14 @@ namespace GrassControl::DistantGrass
 		oneapi::tbb::task_group tasks{ context };
 	};
 
-	// Retains grass-model handles so placement avoids disk access under the grass lock.
+	// Prefetch models to avoid disk access under the grass lock
 	class GrassModelPrefetch
 	{
 	public:
-		// The cell's land must remain loaded during this call.
+		// Requires the cell's land to remain loaded
 		void Request(RE::TESObjectCELL* cell);
 
-		// Grass types retain models still in use after prefetch references are released.
+		// Grass types retain models still in use after Reset
 		void Reset();
 
 	private:
@@ -76,10 +76,10 @@ namespace GrassControl::DistantGrass
 		std::unordered_set<std::string> requested;
 		std::vector<RE::ModelDBHandle::U_Entry*> retainedModels;
 		std::uint64_t generation = 0;
-		std::jthread thread;  // Declared last so the worker stops before the queue it reads.
+		std::jthread thread;  // Destroy the worker before its queue
 	};
 
-	// Shards keep the root below its 16-bit child limit and avoid repeated child-array copies under grassShapeLock.
+	// Keep the root below its 16-bit child limit and reduce copies under grassShapeLock
 	class GrassNodeShards
 	{
 	public:
@@ -90,12 +90,12 @@ namespace GrassControl::DistantGrass
 
 		static RE::NiNode* GrassNode();
 
-		// Caller holds mutex; detached shards must not be reused.
+		// Caller holds mutex, detached shards must not be reused
 		static RE::NiNode* FreeShard(RE::NiNode* root);
 
 		static void AttachChild(RE::NiNode* node, RE::NiAVObject* child, bool firstAvail);
 
-		// Engine code detaches grass shapes from the root node; forward those to the shard that holds them.
+		// Route root-node detaches to the shard holding the shape
 		static RE::NiNode* Owner(RE::NiNode* node, RE::NiAVObject* child);
 
 		static void DetachChildOut(RE::NiNode* node, RE::NiAVObject* child, RE::NiPointer<RE::NiAVObject>& out);
@@ -118,13 +118,13 @@ namespace GrassControl::DistantGrass
 
 	struct CreationState
 	{
-		// The workers must stop before the raycast state they access is destroyed.
+		// Initialize raycast state first so it outlives the workers
 		CreationState();
 
 		std::mutex retiredMutex;
 		std::unordered_map<RE::TESObjectCELL*, RetiredGrass> retiredGrass;
 		std::atomic<std::uint64_t> swaps{ 0 };
-		// Destruction stops prefetch first, then workers, before the retired state they use is released.
+		// Destroy prefetch and workers before retired grass
 		GrassWorkers workers;
 		GrassModelPrefetch modelPrefetch;
 	};
@@ -139,10 +139,10 @@ namespace GrassControl::DistantGrass
 
 	void QueueGrassCreation(RE::TESObjectCELL* cell);
 
-	// Caller holds grassCreateLock; reattach before native removal so it frees retired entries too.
+	// Caller holds grassCreateLock, reattach retired entries before native removal
 	void ReattachRetiredGrass(RE::TESObjectCELL* cell);
 
-	// Main thread only, after the engine advances fade alphas.
+	// Main thread only, after the engine updates fade alphas
 	void RetireReplacedGrass();
 
 	void ReportStatistics();

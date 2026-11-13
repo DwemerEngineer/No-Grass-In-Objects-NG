@@ -128,7 +128,7 @@ namespace GrassControl::Util
 		{
 			error.clear();
 
-			// Let the VFS route an existing-file open, then retain that handle for the update.
+			// Keep the VFS-routed handle for the entire update
 			const FileHandle file{ CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr) };
 			if (file.value == INVALID_HANDLE_VALUE) {
 				return LastError(error);
@@ -154,7 +154,7 @@ namespace GrassControl::Util
 				path = GamePath(path);
 			}
 
-			// File order determines precedence when object configs repeat a form.
+			// The first config containing a form takes precedence
 			std::ranges::sort(paths);
 			std::set<std::filesystem::path, CaseInsensitivePathLess> seen;
 			std::erase_if(paths, [&](const auto& path) { return !seen.insert(path).second; });
@@ -321,7 +321,7 @@ namespace GrassControl::Util
 					shape.vertices.push_back(toWorld(modelData->vertex[i]));
 
 			} else if (auto* bsShape = object->AsTriShape()) {
-				// Dynamic and skinned buffers require their own synchronization.
+				// Dynamic and skinned buffers need separate synchronization
 				const auto type = bsShape->GetType().get();
 				if ((type != RE::BSGeometry::Type::kTriShape && type != RE::BSGeometry::Type::kMeshLODTriShape && type != RE::BSGeometry::Type::kSubIndexTriShape) ||
 					bsShape->GetGeometryRuntimeData().skinInstance)

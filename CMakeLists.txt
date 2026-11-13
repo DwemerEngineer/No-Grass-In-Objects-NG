@@ -106,7 +106,7 @@ target_precompile_headers(
   include/PCH.h
 )
 
-# Recover understood C++ failures; hardware faults must reach the crash handler.
+# Let hardware faults reach the crash handler
 target_compile_options(${PROJECT_NAME} PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/EHsc;/GR->")
 if(NGIO_WAIT_FOR_DEBUGGER)
   target_compile_definitions(${PROJECT_NAME} PRIVATE $<$<CONFIG:Debug>:NGIO_WAIT_FOR_DEBUGGER>)

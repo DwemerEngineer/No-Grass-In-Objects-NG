@@ -192,10 +192,10 @@ namespace GrassControl::DistantGrass
 		return gridState.grassGridRadius;
 	}
 
-	// LoadLand sets this flag once it has started loading the land's data.
+	// Set by LoadLand when terrain loading starts
 	static constexpr std::uint32_t LandDataLoaded = 1 << 3;
 
-	// Coordinate-created cells have no LAND form, so their terrain is loaded through the worldspace.
+	// Coordinate-created cells have no LAND form and load terrain through the worldspace
 	static void LoadTerrain(RE::TESObjectCELL* cell)
 	{
 		auto* land = cell->GetLand();
@@ -227,7 +227,7 @@ namespace GrassControl::DistantGrass
 			reinterpret_cast<std::uintptr_t>(tes->GetRuntimeData2().worldSpace) != ws)
 			return;
 
-		// Leave reference loading to the normal cell loader to avoid resetting NPCs.
+		// Leave references to the cell loader to avoid resetting NPCs
 		auto* cell = RE::CreateCellAt(RE::TESDataHandler::GetSingleton(), x, y, reinterpret_cast<RE::TESWorldSpace*>(ws));
 		if (cell && !IsValidLoadedCell(cell, false))
 			LoadTerrain(cell);
@@ -346,13 +346,13 @@ namespace GrassControl::DistantGrass
 				gridState.cellGrid->RetryDistantCell(info->x, info->y);
 			}
 		}
-		// Native callers can hold the grass-task lock before entering NGIO; never take it under the map lock.
+		// Never take the grass-task lock under the map lock, as native callers acquire them in the opposite order
 		ClearCellAddGrassTask(cell);
 
 		if (holds)
 			holds->WaitUntilReleased();
 
-		// A caller holding the cell before BeginDestruction may publish a task after the first cancellation.
+		// Cancel again in case an existing holder published a task after BeginDestruction
 		ClearCellAddGrassTask(cell);
 		{
 			RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
@@ -439,7 +439,7 @@ namespace GrassControl::DistantGrass
 
 	void CellInfoContainer::RetryDistantCell(int x, int y)
 	{
-		// The normal cell buffer can unload a cell while its terrain is still within grass distance.
+		// The cell buffer can unload terrain still within grass distance
 		if (pendingWorld && IsDistantCell(pendingX, pendingY, x, y, globals::GridsToLoad() / 2, GetGrassGridRadius()))
 			pendingCells.emplace_back(x, y);
 	}
@@ -457,8 +457,8 @@ namespace GrassControl::DistantGrass
 		std::erase_if(inFlight, [&](const auto& entry) {
 			const auto& info = entry.first;
 			if (started - entry.second > DistantCellTimeout) {
-				// A claimed engine task can be dropped before the terrain worker starts.
-				// A worker that already entered Loading still owns its terrain until it returns.
+				// Claimed tasks can be dropped before the terrain worker starts
+				// Loading workers retain their terrain until they return
 				if (info->AdvanceTerrain(TerrainLoad::Queued, TerrainLoad::None) || info->AdvanceTerrain(TerrainLoad::Claimed, TerrainLoad::None))
 					info->loadingTerrain = false;
 				return true;
@@ -467,7 +467,7 @@ namespace GrassControl::DistantGrass
 		});
 
 		if (nextPendingCell == pendingCells.size() && started >= nextRetry && pendingWorld) {
-			// Failed loads must get another chance even when the player stays in the same cell.
+			// Retry failed loads even while the player stays in the same cell
 			pendingCells.clear();
 			nextPendingCell = 0;
 			nextRetry = started + DistantRetryDelay;
@@ -502,7 +502,7 @@ namespace GrassControl::DistantGrass
 				info->loadingTerrain = true;
 				inFlight.emplace_back(info, started);
 
-				// Cell-loading callbacks acquire gridState.cellMapMutex while the engine holds its loader lock.
+				// Loader callbacks take cellMapMutex while holding the engine's loader lock
 				lock.unlock();
 				RE::ExteriorCellLoader::GetSingleton()->QueueCellLoad(world, static_cast<std::int16_t>(x), static_cast<std::int16_t>(y), false);
 				if (info->AdvanceTerrain(TerrainLoad::Queued, TerrainLoad::None))
@@ -558,7 +558,7 @@ namespace GrassControl::DistantGrass
 		const std::string worldName = world ? world->editorID.c_str() : "";
 		int queued = 0;
 
-		// Try-locks keep the main thread from waiting on grass workers; a busy map defers the move to the next frame.
+		// Retry next frame rather than block the main thread on grass workers
 		const auto lockMap = [&](std::unique_lock<std::recursive_mutex>& lock) {
 			if (addType != 0) {
 				lock.lock();
@@ -627,7 +627,7 @@ namespace GrassControl::DistantGrass
 						queue = cell;
 				}
 
-				// Engine workers can start this cell before the rest of the grid is prepared.
+				// Engine workers may start this cell before the rest of the grid is ready
 				if (queue) {
 					QueueGrassCreation(queue);
 					++queued;
@@ -685,7 +685,7 @@ namespace GrassControl::DistantGrass
 			std::scoped_lock lock(gridState.cellMapMutex);
 			auto& entry = cells[Key(world->formID, x, y)];
 
-			// An aborted load can still satisfy a renewed request.
+			// An aborted load may still satisfy a new request
 			if (entry.state == State::Abort && entry.standIn) {
 				entry.state = State::Loading;
 				return false;

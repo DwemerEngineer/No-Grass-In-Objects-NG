@@ -18,12 +18,12 @@ namespace GrassControl::DistantGrass
 
 	static bool UseGrassWorkers(const RE::BGSGrassManager* manager, RE::TESObjectCELL* cell)
 	{
-		// Cell workers require extended-grid tracking; ordinary retries use the native task queue.
+		// Cell workers need extended-grid tracking, otherwise use the native task queue
 		return gridState.cellGrid && Config::ThreadedGrassPlacement && !Config::OnlyLoadFromCache && manager && !manager->generateGrassDataFiles && !Config::GeneratingCache &&
 		       cell && cell->GetCoordinates();
 	}
 
-	// Callers hold grassCreateLock.
+	// Caller holds grassCreateLock
 	static std::vector<RE::CellGrassData*> TakeGrassHandles(RE::TESObjectCELL* cell)
 	{
 		std::vector<RE::CellGrassData*> handles;
@@ -35,7 +35,7 @@ namespace GrassControl::DistantGrass
 		return handles;
 	}
 
-	// The native removal frees every entry in the cell's list, so only the dropped entries are left in it while it runs.
+	// Native removal frees the entire list, so keep retained handles out of it
 	static void ReplaceGrassHandles(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, const std::vector<RE::CellGrassData*>& drop, const std::vector<RE::CellGrassData*>& keep)
 	{
 		const auto attach = [&](const std::vector<RE::CellGrassData*>& handles) {
@@ -87,7 +87,7 @@ namespace GrassControl::DistantGrass
 
 		const bool fromCache = globals::AllowLoadGrass() && gridState.cacheIndex.Contains(*cell);
 		const bool requireCollision = wanted == GrassState::Active && GrassPatchCreation::NeedsCollision(manager, fromCache);
-		// Native placement can enter the loader while its callbacks need the map lock.
+		// Native placement can enter loader callbacks that need the map lock
 		lock.unlock();
 		RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
 		lock.lock();
@@ -133,7 +133,7 @@ namespace GrassControl::DistantGrass
 		if (!*abort)
 			patchCreation.AddCliffGrass(manager);
 
-		// Collision that vanished mid-placement left some grass unfiltered; keep the cell replaceable and retry it.
+		// Retry if collision disappeared during placement and left grass unfiltered
 		const bool unfiltered = requireCollision && PhysicsRaycast::UnavailableQueries() != unavailableBefore;
 		lock.lock();
 		if (info->cell == cell && info->taskGeneration == generation) {
@@ -167,7 +167,7 @@ namespace GrassControl::DistantGrass
 		GrassTasks::FromCancel(abort)->DecRefCount();
 	}
 
-	// A shape's staging buffer belongs to the thread that starts it, so builds sharing a shape must not overlap.
+	// A shape's staging buffer belongs to the thread that starts the build
 	std::int64_t GrassWorkers::GrassBlockOf(const RE::TESObjectCELL* cell) const
 	{
 		const auto* coordinates = cell ? const_cast<RE::TESObjectCELL*>(cell)->GetCoordinates() : nullptr;
@@ -251,7 +251,7 @@ namespace GrassControl::DistantGrass
 			return false;
 		}
 
-		// Inline work can enter the loader; it must not keep the submitting cell held while streaming other cells.
+		// Release the cell before inline work enters the loader to stream other cells
 		holder = {};
 		if (runInline)
 			Work();
@@ -296,14 +296,14 @@ namespace GrassControl::DistantGrass
 			try {
 				job = Take();
 			} catch (const std::bad_alloc&) {
-				// Without memory to reserve its block the job cannot build, but is still taken so it can be deferred.
+				// Take the unreserved job so it can be deferred after releasing the queue lock
 				job = jobs.front();
 				job->reserved = false;
 				jobs.pop_front();
 			}
 		}
 
-		// Ending under the queue lock lets a job submitted afterwards dispatch a new callback.
+		// Clear the callback count under the queue lock so later submissions can dispatch
 		if (!job)
 			--callbacks;
 
@@ -332,7 +332,7 @@ namespace GrassControl::DistantGrass
 			DeferUnbuilt(job);
 	}
 
-	// Keep the last completed state; a failed first build has no LOD grass to retain.
+	// Keep the last completed state if rebuilding fails
 	void GrassWorkers::DeferUnbuilt(const Job& job)
 	{
 		const auto holder = TryHoldTrackedCell(job.cell);
@@ -453,7 +453,7 @@ namespace GrassControl::DistantGrass
 				requestGeneration = generation;
 			}
 
-			// The model cache is thread-safe, so prefetching never takes the grass lock.
+			// The model cache is thread-safe and does not need the grass lock
 			const auto modelKey = RE::MakeGrassModelKey(modelPath.c_str());
 			auto* modelEntry = RE::DemandGrassModel(modelKey);
 			if (!modelEntry)
@@ -497,7 +497,7 @@ namespace GrassControl::DistantGrass
 		if (!shard)
 			return nullptr;
 
-		// The root's culling only visits children with bounds or kAlwaysDraw, and a shard's bound is not maintained.
+		// Shards need kAlwaysDraw because their bounds are not maintained
 		shard->GetFlags().set(RE::NiAVObject::Flag::kAlwaysDraw);
 		shard->world = root->world;
 		attachChild(root, shard.get(), true);
@@ -513,7 +513,7 @@ namespace GrassControl::DistantGrass
 
 		std::scoped_lock lock(mutex);
 		if (auto* shard = FreeShard(root))
-			attachChild(shard, child, true);  // Reuse detached slots so a shard's array never grows past its capacity.
+			attachChild(shard, child, true);  // Reuse detached slots to stay within ShardCapacity
 		else
 			attachChild(node, child, firstAvail);
 	}
@@ -565,7 +565,7 @@ namespace GrassControl::DistantGrass
 		for (auto* cell : cells) {
 			CellHolder holder;
 			{
-				// A cell with a queued or running grass task still owns its lists.
+				// Queued and running grass tasks still own the cell's lists
 				std::unique_lock lock(gridState.cellMapMutex, std::try_to_lock);
 				if (!lock)
 					return;
@@ -625,7 +625,7 @@ namespace GrassControl::DistantGrass
 			return;
 		}
 
-		// Retain a native task for cancellation while bypassing the IOManager queue.
+		// Keep a native task for cancellation while bypassing the IOManager queue
 		RE::NiPointer<RE::AddCellGrassTask> task;
 		{
 			RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
@@ -654,7 +654,7 @@ namespace GrassControl::DistantGrass
 		if (!cell)
 			return;
 
-		// Stand-in cells are NGIO's own, and an aborted load still has to discard them.
+		// Aborted loads must also discard NGIO's stand-in cells
 		if (gridState.cacheOnlyCells) {
 			gridState.cacheOnlyCells->Load(cell);
 			return;
