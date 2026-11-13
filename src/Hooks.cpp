@@ -98,10 +98,36 @@ namespace GrassControl
 	{
 		struct WorldWriteLock
 		{
+			static void LockForWrite(RE::BSReadWriteLock* lock)
+			{
+				auto* writerThread = reinterpret_cast<volatile long*>(lock);
+				auto* state = writerThread + 1;
+				const auto thread = static_cast<long>(REX::W32::GetCurrentThreadId());
+
+				if (*writerThread == thread) {
+					_InterlockedIncrement(state);
+					return;
+				}
+
+				for (std::uint32_t tries = 0; _InterlockedCompareExchange(state, static_cast<long>(RE::BSReadWriteLock::kLockWrite | 1u), 0);) {
+					if (tries < 10000) {
+						++tries;
+						REX::W32::Sleep(0);
+					} else {
+						REX::W32::Sleep(1);
+					}
+				}
+
+				*writerThread = thread;
+				_mm_mfence();
+			}
+
 			static void thunk(RE::BSReadWriteLock* lock)
 			{
-				PhysicsRaycast::EnterWriteLock(lock);
+				PhysicsRaycast::EnterWriteLock(lock, func.get());
 			}
+
+			inline static REL::Relocation<decltype(thunk)> func;
 		};
 
 		struct MainUpdate
@@ -198,8 +224,15 @@ namespace GrassControl
 			InstallGrassPlacementHooks();
 
 			// Patch before engine threads start using the write lock
-			if (Config::RayCast || Config::GrassCliffs)
-				SKSE::GetTrampoline().write_branch<5>(RELOCATION_ID(66977, 68234).address(), WorldWriteLock::thunk);
+			if (Config::RayCast || Config::GrassCliffs) {
+				const auto address = RELOCATION_ID(66977, 68234).address();
+				if (*reinterpret_cast<const std::uint8_t*>(address) == 0xE9) {
+					stl::write_thunk_jump<WorldWriteLock>(address);
+				} else {
+					WorldWriteLock::func = reinterpret_cast<std::uintptr_t>(WorldWriteLock::LockForWrite);
+					SKSE::GetTrampoline().write_branch<5>(address, WorldWriteLock::thunk);
+				}
+			}
 
 			if (Config::SuperDenseGrass) {
 				const auto addr = RELOCATION_ID(15202, 15370).address() + REL::Relocate(0xAE5 - 0x890, 0x258, 0xAE5 - 0x890);

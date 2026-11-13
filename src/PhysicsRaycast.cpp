@@ -35,37 +35,18 @@ namespace GrassControl
 	}
 
 	// Count waiting writers before polling so new grass readers yield
-	void PhysicsRaycast::WorldReadGate::EnterWriteLock(RE::BSReadWriteLock* lock)
+	void PhysicsRaycast::WorldReadGate::EnterWriteLock(RE::BSReadWriteLock* lock, WriteLockFunc enterWriteLock)
 	{
-		auto* writerThread = reinterpret_cast<volatile long*>(lock);
-		auto* state = writerThread + 1;
-		const auto thread = static_cast<long>(GetCurrentThreadId());
-
-		if (*writerThread == thread) {
-			_InterlockedIncrement(state);
-			return;
-		}
-
 		const bool watched = lock == watchedLock.load(std::memory_order_relaxed);
 		if (watched)
 			watchedWriters.fetch_add(1);
 
-		for (std::uint32_t tries = 0; _InterlockedCompareExchange(state, static_cast<long>(0x80000001), 0);) {
-			if (tries < 10000) {
-				++tries;
-				Sleep(0);
-			} else {
-				Sleep(1);
-			}
-		}
+		enterWriteLock(lock);
 
 		if (watched) {
 			watchedWriters.fetch_sub(1);
 			watchedWriters.notify_all();
 		}
-
-		*writerThread = thread;
-		_mm_mfence();
 	}
 
 	void PhysicsRaycast::WorldReadGate::Enter(RE::bhkWorld* world)
@@ -140,9 +121,9 @@ namespace GrassControl
 		       ValidDimension(glm::length(glm::vec3(difference)));
 	}
 
-	void PhysicsRaycast::EnterWriteLock(RE::BSReadWriteLock* lock)
+	void PhysicsRaycast::EnterWriteLock(RE::BSReadWriteLock* lock, WriteLockFunc enterWriteLock)
 	{
-		GetSingleton().worldReadGate.EnterWriteLock(lock);
+		GetSingleton().worldReadGate.EnterWriteLock(lock, enterWriteLock);
 	}
 
 	// The deleting destructor frees this through the current Havok heap

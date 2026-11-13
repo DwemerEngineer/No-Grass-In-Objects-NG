@@ -48,8 +48,10 @@ namespace GrassControl
 			return instance;
 		}
 
+		using WriteLockFunc = void (*)(RE::BSReadWriteLock*);
+
 		// Give waiting writers priority over grass readers
-		static void EnterWriteLock(RE::BSReadWriteLock* lock);
+		static void EnterWriteLock(RE::BSReadWriteLock* lock, WriteLockFunc enterWriteLock);
 
 		RayResult CastRay(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL* cell, const RaycastHelper& settings, bool ignoreCliff = false);
 
@@ -95,7 +97,7 @@ namespace GrassControl
 		class WorldReadGate final
 		{
 		public:
-			void EnterWriteLock(RE::BSReadWriteLock* lock);
+			void EnterWriteLock(RE::BSReadWriteLock* lock, WriteLockFunc enterWriteLock);
 			void Enter(RE::bhkWorld* world);
 			void Exit();
 
