@@ -37,6 +37,69 @@ namespace GrassControl
 			setting->data.i = value;
 	}
 
+	struct BeginGrassCell
+	{
+		static RE::BSTArray<RE::CellGrassData*>* thunk(RE::ExtraDataList* extraList, bool create)
+		{
+			return GrassPatchCreation::BeginCell(extraList, create, func.get());
+		}
+
+		inline static REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct SelectCellGrass
+	{
+		static std::uint32_t thunk(RE::TESObjectLAND* land, std::uint32_t quadrant, std::uint32_t vertex, RE::GrassParam* params, std::uint32_t capacity)
+		{
+			return GrassPatchCreation::SelectGrass(land, quadrant, vertex, params, capacity, func.get());
+		}
+
+		inline static REL::Relocation<decltype(thunk)> func;
+	};
+
+	static void InstallGrassPlacementHooks()
+	{
+		struct CreatePatchCall : Xbyak::CodeGenerator
+		{
+			explicit CreatePatchCall(std::uintptr_t returnAddress)
+			{
+				Label returnLabel;
+				Label funcLabel;
+
+				// AddCellGrass keeps LoadGrassType's result in rbx
+				mov(r8, rbx);
+				call(ptr[rip + funcLabel]);
+				jmp(ptr[rip + returnLabel]);
+
+				L(returnLabel);
+				dq(returnAddress);
+				L(funcLabel);
+				dq(reinterpret_cast<std::uintptr_t>(GrassPatchCreation::CreatePatch));
+				ready();
+			}
+		};
+
+		const auto addCellGrass = RELOCATION_ID(15204, 15372).address();
+		const auto createPatchCall = addCellGrass + (UpdatedRuntime() ? 0x519 : REL::Relocate(0x4FF, 0x4FF, 0x4FF));
+		const auto finishInstancesCall = addCellGrass + (UpdatedRuntime() ? 0x5EC : REL::Relocate(0x5E0, 0x5DC, 0x5E0));
+
+		auto& trampoline = SKSE::GetTrampoline();
+		CreatePatchCall createPatch(createPatchCall + 5);
+		trampoline.write_branch<5>(createPatchCall, trampoline.allocate(createPatch));
+		trampoline.write_call<6>(finishInstancesCall, GrassPatchCreation::FinishInstances);
+
+		if (Config::SmoothGrassPlacement) {
+			const auto beginSite = addCellGrass + REL::Relocate(0x14B, 0x149, 0x14B);
+			const auto selectSite = addCellGrass + (UpdatedRuntime() ? 0x29C : REL::Relocate(0x28B, 0x28B, 0x28B));
+			stl::write_thunk_call<BeginGrassCell>(beginSite);
+			stl::write_thunk_call<SelectCellGrass>(selectSite);
+		}
+
+		GrassPatchCreation::Enable();
+		logger::info("Shared grass placement enabled{}.", Config::ThreadedGrassPlacement ? " with placement workers" : "");
+	}
+
+
 	namespace Plugin
 	{
 		struct MainUpdate
@@ -133,7 +196,7 @@ namespace GrassControl
 				Config::ExtendGrassDistance = Config::DynDOLODGrassMode == 2;
 			}
 
-			GrassPatchCreation::Install();
+			InstallGrassPlacementHooks();
 
 			// Patched while the game is still single-threaded; the engine's write lock is in constant use once it runs.
 			if (Config::RayCast || Config::GrassCliffs)

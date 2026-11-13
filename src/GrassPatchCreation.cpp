@@ -14,6 +14,109 @@
 
 namespace GrassControl
 {
+	GrassDensityField GrassDensityField::Blend(const std::array<const GrassDensityField*, 9>& fields, const std::array<bool, 9>& present)
+	{
+		GrassDensityField result;
+
+		for (int y = 0; y < Side; ++y) {
+			for (int x = 0; x < Side; ++x) {
+				float sum = 0.0f;
+				int count = 0;
+
+				for (int dy = -1; dy <= 1; ++dy) {
+					const int sy = y - dy * (Side - 1);
+					if (sy < 0 || sy >= Side)
+						continue;
+
+					for (int dx = -1; dx <= 1; ++dx) {
+						const int sx = x - dx * (Side - 1);
+						const int tile = (dy + 1) * 3 + dx + 1;
+
+						if (sx < 0 || sx >= Side || !present[tile])
+							continue;
+
+						if (fields[tile])
+							sum += fields[tile]->values[sy * Side + sx];
+
+						++count;
+					}
+				}
+
+				result.values[y * Side + x] = count ? sum / float(count) : 0.0f;
+			}
+		}
+
+		return result;
+	}
+
+	float GrassDensityField::Sample(float x, float y) const noexcept
+	{
+		if (!std::isfinite(x) || !std::isfinite(y))
+			return 0.0f;
+
+		const float gx = std::clamp(x / Step, 0.0f, float(Side - 1));
+		const float gy = std::clamp(y / Step, 0.0f, float(Side - 1));
+
+		const int ix = std::min(int(gx), Side - 2);
+		const int iy = std::min(int(gy), Side - 2);
+
+		const float tx = gx - float(ix);
+		const float ty = gy - float(iy);
+		const int index = iy * Side + ix;
+
+		return std::lerp(std::lerp(values[index], values[index + 1], tx),
+			std::lerp(values[index + Side], values[index + Side + 1], tx), ty);
+	}
+
+	void GrassTerrainCache::Publish(std::uint32_t world, int x, int y, Snapshot fields)
+	{
+		std::scoped_lock lock(mutex);
+		const Key key{ world, x, y };
+
+		auto entry = tiles.find(key);
+		if (entry != tiles.end()) {
+			entry->second = std::move(fields);
+			return;
+		}
+
+		// Queue first so insertion failure can roll back
+		order.push_back(key);
+		try {
+			tiles.emplace(key, std::move(fields));
+		} catch (...) {
+			order.pop_back();
+			throw;
+		}
+
+		if (tiles.size() > Capacity) {
+			tiles.erase(order.front());
+			order.pop_front();
+		}
+	}
+
+	std::array<GrassTerrainCache::Snapshot, 9> GrassTerrainCache::Neighborhood(std::uint32_t world, int x, int y)
+	{
+		std::array<Snapshot, 9> result{};
+		std::scoped_lock lock(mutex);
+
+		for (int dy = -1; dy <= 1; ++dy) {
+			for (int dx = -1; dx <= 1; ++dx) {
+				const auto entry = tiles.find(Key{ world, x + dx, y + dy });
+				if (entry != tiles.end())
+					result[(dy + 1) * 3 + dx + 1] = entry->second;
+			}
+		}
+
+		return result;
+	}
+
+	void GrassTerrainCache::Clear()
+	{
+		std::scoped_lock lock(mutex);
+		tiles.clear();
+		order.clear();
+	}
+
 	GrassPatchCreation::Random::Random(std::uint32_t seed)
 	{
 		state[0] = seed;
@@ -26,7 +129,7 @@ namespace GrassControl
 	{
 		if (index == 0) {
 			for (std::size_t i = 0; i < state.size(); ++i) {
-				// The engine reads its zero-valued index field after the final state word rather than wrapping to state[0].
+				// The engine uses zero after the last word, not state[0]
 				const auto next = i + 1 < state.size() ? state[i + 1] : 0u;
 				const auto value = (state[i] & 1u) + ((next % 624u) & 0x7FFFFFFFu);
 				state[i] = state[(i + 397) % state.size()] ^ (value * 2u) ^ ((value & 1u) ? 0x9908B0DFu : 0u);
@@ -38,6 +141,7 @@ namespace GrassControl
 		index = (index + 1) % state.size();
 		const auto first = ((((value >> 11) ^ value) & 0xFF3A58ADu) << 7) ^ (value >> 11) ^ value;
 		const auto second = ((first & 0xFFFFDF8Cu) << 15) ^ first;
+
 		return (second >> 18) ^ second;
 	}
 
@@ -46,37 +150,37 @@ namespace GrassControl
 		return static_cast<float>(Next()) * 4.6566129e-10f - 1.0f;
 	}
 
-	void GrassPatchCreation::Install()
+	GrassPatchCreation::StableRandom::StableRandom(std::uint64_t seed)
 	{
-		struct CreatePatchCall : Xbyak::CodeGenerator
-		{
-			CreatePatchCall()
-			{
-				// The engine holds the current shape in rbx rather than an argument register.
-				mov(r8, rbx);
-				mov(rax, reinterpret_cast<std::uintptr_t>(CreatePatch));
-				jmp(rax);
-				ready();
-			}
-		};
+		// SplitMix64 seed mixing
+		seed += 0x9E3779B97F4A7C15ull;
+		seed = (seed ^ (seed >> 30)) * 0xBF58476D1CE4E5B9ull;
+		seed = (seed ^ (seed >> 27)) * 0x94D049BB133111EBull;
+		state = seed ^ (seed >> 31);
+	}
 
-		extendedParameters = REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99;
-		const auto addCellGrass = RELOCATION_ID(15204, 15372).address();
-		const auto createPatchCall = addCellGrass + (extendedParameters ? 0x519 : 0x4FF);
-		const auto finishInstancesCall = addCellGrass + (extendedParameters ? 0x5EC : REL::Relocate(0x5E0, 0x5DC, 0x5E0));
+	std::uint32_t GrassPatchCreation::StableRandom::Next()
+	{
+		const auto oldState = state;
+		state = oldState * 6364136223846793005ull + 1442695040888963407ull;
+		const auto shifted = static_cast<std::uint32_t>(((oldState >> 18) ^ oldState) >> 27);
 
-		auto& trampoline = SKSE::GetTrampoline();
-		CreatePatchCall createPatch;
-		trampoline.write_call<5>(createPatchCall, trampoline.allocate(createPatch));
-		trampoline.write_call<6>(finishInstancesCall, FinishInstances);
+		return std::rotr(shifted, static_cast<int>(oldState >> 59));
+	}
 
+	float GrassPatchCreation::StableRandom::SignedFloat()
+	{
+		return static_cast<float>(Next()) * (2.0f / 4294967296.0f) - 1.0f;
+	}
+
+	void GrassPatchCreation::Enable()
+	{
 		enabled = true;
-		logger::info("Shared grass placement enabled{}.", Config::ThreadedGrassPlacement ? " with placement workers" : "");
 	}
 
 	int GrassPatchCreation::ShapeCoordinate(int cell)
 	{
-		// Signed division must truncate toward zero to match the engine's grass origins.
+		// Match engine truncation toward zero
 		return Config::ExtendGrassDistance ? cell / CellsPerShape * CellsPerShape : cell / CellsPerOrigin;
 	}
 
@@ -110,18 +214,21 @@ namespace GrassControl
 			ReleaseNativePlacement();
 			workers.ReleaseBlock(block);
 		});
+
 		RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
 		GrassPatchCreation patchCreation(cell, abort);
+
 		if (!patchCreation.PrepareCell(NeedsCollision(manager, fromCache))) {
 			PhysicsRaycast::GetSingleton().DeferCell(cell);
 			DistantGrass::ClearCellAddGrassTask(cell);
 			return;
 		}
 
+		patchCreation.PrepareSmooth(manager, fromCache);
 		add(manager, cell, abort);
 		ReleaseNativePlacement();
 
-		// The engine has already written the cell's cache file, so cliff grass built while generating would be discarded.
+		// Cache serialization has already finished
 		if (!*abort && !Config::GeneratingCache)
 			patchCreation.AddCliffGrass(manager);
 	}
@@ -143,17 +250,13 @@ namespace GrassControl
 
 	GrassPatchCreation::~GrassPatchCreation()
 	{
-		if (work) {
-			work->tasks.cancel();
-			work->arena.execute([&] { work->tasks.wait(); });
-		}
-
+		CancelWork();
 		current = previous;
 	}
 
 	std::uint32_t GrassPatchCreation::CreatePatch(RE::BGSGrassManager* manager, RE::CreateGrassParams* params, RE::BSMultiStreamInstanceTriShape* shape)
 	{
-		// The engine copied the previous patch out of the shared buffer before asking for this one.
+		// The engine has consumed the previous patch
 		ReleaseNativePlacement();
 
 		if (!current && enabled && params->land && params->land->parentCell) {
@@ -203,7 +306,227 @@ namespace GrassControl
 		return settings && (!settings->Valid || PhysicsRaycast::GetSingleton().CanFilterCell(*cell));
 	}
 
-	bool GrassPatchCreation::Queue(RE::BGSGrassManager* manager, const RE::CreateGrassParams& params, RE::BSMultiStreamInstanceTriShape* shape)
+	std::vector<RE::TESGrass*> GrassPatchCreation::TextureGrasses(RE::TESLandTexture* texture)
+	{
+		std::vector<RE::TESGrass*> result;
+		if (!texture)
+			return result;
+
+		const auto* setting = globals::settings::maxGrassTypesPerTexture;
+		const int maximum = std::max({ 0, setting ? setting->GetInteger() : 2, Config::EnsureMaxGrassTypesPerTextureSetting });
+		int used = 0;
+		for (auto* grass : texture->textureGrassList) {
+			if (!grass)
+				continue;
+
+			// The engine accepts used == maximum
+			if (used++ > maximum)
+				break;
+
+			const auto* model = grass->GetModel();
+			if (model && *model)
+				result.push_back(grass);
+		}
+
+		return result;
+	}
+
+	GrassPatchCreation::DensityFields GrassPatchCreation::ReadDensityFields(RE::TESObjectLAND* land)
+	{
+		constexpr int PaintedLayers = 6;
+		constexpr int QuadrantSide = 17;
+		constexpr int FullWeight = 255;
+
+		const auto* data = land ? land->loadedData : nullptr;
+		if (!data)
+			return {};
+
+		struct Coverage
+		{
+			std::shared_ptr<GrassDensityField> field;
+			float density;
+			std::uint8_t layerMask = 0;
+		};
+		std::unordered_map<RE::FormID, Coverage> coverage;
+		std::array<unsigned char, GrassDensityField::Side * GrassDensityField::Side> contributors{};
+
+		// Terrain must remain loaded while copying
+		for (int quadrant = 0; quadrant < 4; ++quadrant) {
+			for (auto& [id, entry] : coverage)
+				entry.layerMask = 0;
+
+			for (int layer = 0; layer <= PaintedLayers; ++layer) {
+				auto* texture = layer < PaintedLayers ? data->quadTextures[quadrant][layer] : data->defQuadTextures[quadrant];
+				if (layer == PaintedLayers && !texture)
+					texture = RE::TESLandTexture::GetDefaultLandTexture();
+
+				for (const auto* grass : TextureGrasses(texture)) {
+					auto [it, inserted] = coverage.try_emplace(grass->GetFormID());
+					auto& entry = it->second;
+					if (inserted) {
+						entry.field = std::make_shared<GrassDensityField>();
+						entry.density = static_cast<float>(grass->GetDensity()) * 0.01f;
+					}
+					entry.layerMask |= static_cast<std::uint8_t>(1 << layer);
+				}
+			}
+
+			const int quadrantX = (quadrant % 2) * (QuadrantSide - 1);
+			const int quadrantY = (quadrant / 2) * (QuadrantSide - 1);
+
+			for (int y = 0; y < QuadrantSide; ++y) {
+				for (int x = 0; x < QuadrantSide; ++x) {
+					const auto& weights = data->percents[quadrant][y * QuadrantSide + x];
+					int paintedWeight = 0;
+					for (const auto weight : weights)
+						paintedWeight += static_cast<std::uint8_t>(weight);
+
+					const int index = (y + quadrantY) * GrassDensityField::Side + x + quadrantX;
+					++contributors[index];
+
+					for (auto& [id, entry] : coverage) {
+						if (!entry.layerMask)
+							continue;
+
+						int grassWeight = entry.layerMask & (1 << PaintedLayers) ? std::max(FullWeight - paintedWeight, 0) : 0;
+						for (int layer = 0; layer < PaintedLayers; ++layer) {
+							if (entry.layerMask & (1 << layer))
+								grassWeight += static_cast<std::uint8_t>(weights[layer]);
+						}
+						entry.field->values[index] += entry.density * static_cast<float>(std::min(grassWeight, FullWeight)) / FullWeight;
+					}
+				}
+			}
+		}
+
+		// Average shared edges to prevent quadrant seams
+		DensityFields fields;
+		for (auto& [id, entry] : coverage) {
+			for (std::size_t i = 0; i < entry.field->values.size(); ++i)
+				entry.field->values[i] /= static_cast<float>(contributors[i]);
+			fields.emplace(id, std::move(entry.field));
+		}
+
+		return fields;
+	}
+
+	std::shared_ptr<const GrassDensityField> GrassPatchCreation::DensityField(RE::TESObjectLAND* land, RE::FormID grassID)
+	{
+		if (const auto entry = densityFields.find(grassID); entry != densityFields.end())
+			return entry->second;
+
+		auto fields = ReadDensityFields(land);
+		densityFields.merge(fields);
+		auto& field = densityFields[grassID];
+		if (!field && land && land->loadedData && RE::TESForm::LookupByID<RE::TESGrass>(grassID))
+			field = std::make_shared<GrassDensityField>();
+
+		return field;
+	}
+
+	GrassTerrainCache::Snapshot GrassPatchCreation::CaptureTerrain(RE::TESObjectCELL* cell)
+	{
+		if (!enabled || !Config::SmoothGrassPlacement || !cell)
+			return {};
+
+		auto* land = cell->GetRuntimeData().cellLand;
+		const auto* coordinates = cell->GetCoordinates();
+		auto* world = cell->GetRuntimeData().worldSpace;
+
+		if (!land || !land->loadedData || !coordinates || !world)
+			return {};
+
+		try {
+			auto fields = std::make_shared<const DensityFields>(ReadDensityFields(land));
+			terrainCache.Publish(world->GetFormID(), coordinates->cellX, coordinates->cellY, fields);
+			return fields;
+		} catch (const std::bad_alloc&) {
+			logger::warn("Unable to copy grass terrain; neighboring cells will use their available coverage.");
+			return {};
+		}
+	}
+
+	void GrassPatchCreation::ClearTerrainCache()
+	{
+		terrainCache.Clear();
+	}
+
+	void GrassPatchCreation::PrepareSmooth(RE::BGSGrassManager* manager, bool fromCache)
+	{
+		placementManager = manager;
+		if (!manager || !manager->enableGrass || *abort)
+			return;
+
+		auto cellFields = CaptureTerrain(cell);
+		if (!cellFields || ((fromCache || Config::OnlyLoadFromCache) && !manager->generateGrassDataFiles))
+			return;
+
+		const auto* coordinates = cell->GetCoordinates();
+		const auto* world = cell->GetRuntimeData().worldSpace;
+		try {
+			auto neighbors = terrainCache.Neighborhood(world->GetFormID(), coordinates->cellX, coordinates->cellY);
+			neighbors[4] = std::move(cellFields);
+
+			std::array<bool, 9> present{};
+			std::unordered_set<RE::FormID> grassTypes;
+			for (std::size_t i = 0; i < neighbors.size(); ++i) {
+				present[i] = neighbors[i] != nullptr;
+				if (!present[i])
+					continue;
+
+				for (const auto& [id, field] : *neighbors[i])
+					grassTypes.insert(id);
+			}
+
+			DensityFields blended;
+			for (const auto id : grassTypes) {
+				std::array<const GrassDensityField*, 9> fields{};
+				for (std::size_t i = 0; i < neighbors.size(); ++i) {
+					if (!neighbors[i])
+						continue;
+
+					if (const auto entry = neighbors[i]->find(id); entry != neighbors[i]->end())
+						fields[i] = entry->second.get();
+				}
+
+				auto field = std::make_shared<GrassDensityField>(GrassDensityField::Blend(fields, present));
+				if (std::ranges::any_of(field->values, [](float value) { return value > 0.0f; }))
+					blended.emplace(id, std::move(field));
+			}
+
+			densityFields = std::move(blended);
+			smoothReady = true;
+		} catch (const std::bad_alloc&) {
+			logger::warn("Unable to capture smooth grass terrain; keeping patch placement.");
+		}
+	}
+
+	RE::BSTArray<RE::CellGrassData*>* GrassPatchCreation::BeginCell(RE::ExtraDataList* extraList, bool create, BeginCellFunc begin)
+	{
+		auto* handles = begin(extraList, create);
+		if (current && current->smoothReady && handles && handles->empty()) {
+			try {
+				current->GenerateSmoothCell();
+				current->smoothCompleted = true;
+			} catch (const std::bad_alloc&) {
+				// Stop workers before removing partial groups
+				current->CancelWork();
+				current->placementManager->RemoveCellGrass(current->cell);
+				handles = begin(extraList, create);
+				logger::warn("Unable to build smooth grass; removed partial groups and restored patch placement.");
+			}
+		}
+		return handles;
+	}
+
+	std::uint32_t GrassPatchCreation::SelectGrass(RE::TESObjectLAND* land, std::uint32_t quadrant, std::uint32_t vertex, RE::GrassParam* params, std::uint32_t capacity, SelectGrassFunc select)
+	{
+		if (current && current->smoothCompleted)
+			return 0;
+		return select(land, quadrant, vertex, params, capacity);
+	}
+
+	bool GrassPatchCreation::Queue(RE::BGSGrassManager* manager, const RE::CreateGrassParams& params, RE::BSMultiStreamInstanceTriShape* shape, std::uint32_t cellSide, std::uint32_t first, std::uint32_t end)
 	{
 		if (!shape || !params.land || params.land->parentCell != cell)
 			return false;
@@ -213,42 +536,50 @@ namespace GrassControl
 			return false;
 
 		const auto minimumSpacing = minimumSize->GetInteger();
-		if (shape->GetMultiStreamTrishapeRuntimeData().instanceSize != InstanceHalfwords || minimumSpacing <= 0 || !std::isfinite(params.grassParam->positionRange) || params.grassParam->positionRange <= 0.0f)
+		if (shape->GetMultiStreamTrishapeRuntimeData().instanceSize != InstanceHalfwords || minimumSpacing <= 0)
+			return false;
+
+		const auto& grass = *params.grassParam;
+		const bool validRange = std::isfinite(grass.positionRange) && (cellSide ? grass.positionRange >= 0.0f : grass.positionRange > 0.0f);
+		if (!validRange)
 			return false;
 
 		const float width = static_cast<float>(manager->grassPatchSize) * 2.0f;
-		const float count = std::min(width / params.grassParam->positionRange, width / static_cast<float>(minimumSpacing));
-		if (!std::isfinite(count) || count < 1.0f || count > 65535.0f)
+		const float sideCount = cellSide ? static_cast<float>(cellSide) : std::min(width / grass.positionRange, width / static_cast<float>(minimumSpacing));
+		if (!std::isfinite(sideCount) || sideCount < 1.0f || sideCount > 65535.0f)
 			return false;
 
-		const auto candidatesPerSide = static_cast<std::uint32_t>(count);
-		const auto candidates = static_cast<std::size_t>(candidatesPerSide) * candidatesPerSide;
+		const auto candidatesPerSide = cellSide ? cellSide : static_cast<std::uint32_t>(sideCount);
+		const auto candidates = cellSide ? std::size_t(end - first) : static_cast<std::size_t>(candidatesPerSide) * candidatesPerSide;
 		if (patchCount && (patchCount == patches.size() || candidateCount + candidates > MaxBatchCandidates))
 			Flush();
 
 		auto& patch = patches[patchCount];
 		patch.sideCount = candidatesPerSide;
-		patch.instances.resize(static_cast<std::size_t>(patch.sideCount) * patch.sideCount * InstanceHalfwords);
+		patch.firstCandidate = cellSide ? first : 0;
+		patch.endCandidate = cellSide ? end : candidatesPerSide * candidatesPerSide;
+		patch.instances.resize(candidates * InstanceHalfwords);
 		patch.params = params;
 		patch.densityMultiplier = 1.0f;
 
-		if (extendedParameters) {
-			const auto extended = std::bit_cast<ExtendedGrassParams>(params);
-			patch.densityMultiplier = extended.densityMultiplier;
-			patch.params.distanceFromWaterLevel = extended.distanceFromWaterLevel;
-			patch.params.underwaterState = extended.underwaterState;
-			patch.params.waterHeight = extended.waterHeight;
-			patch.params.minSlopeDegrees = extended.minSlopeDegrees;
-			patch.params.maxSlopeDegrees = extended.maxSlopeDegrees;
+		auto runtimeParams = params;
+		if (const auto* multiplier = runtimeParams.GetDensityMultiplier()) {
+			patch.densityMultiplier = *multiplier;
+			patch.params.distanceFromWaterLevel = runtimeParams.GetDistanceFromWaterLevel();
+			patch.params.underwaterState = runtimeParams.GetUnderwaterState();
+			patch.params.waterHeight = runtimeParams.GetWaterHeight();
+			patch.params.minSlopeDegrees = runtimeParams.GetMinSlopeDegrees();
+			patch.params.maxSlopeDegrees = runtimeParams.GetMaxSlopeDegrees();
 		}
 
 		if (!std::isfinite(patch.densityMultiplier) || patch.densityMultiplier < 0.0f)
 			patch.densityMultiplier = 0.0f;
 
 		if (settings)
-			patch.candidates.resize(static_cast<std::size_t>(patch.sideCount) * patch.sideCount);
+			patch.candidates.resize(candidates);
 
-		patch.grass = *params.grassParam;
+		patch.grass = grass;
+		patch.densityField = Config::SmoothGrassPlacement ? DensityField(params.land, patch.grass.grassFormID) : nullptr;
 		patch.start = *params.grassPatchStart;
 
 		std::transform(params.grassDensityPcts, params.grassDensityPcts + patch.density.size(), patch.density.begin(), [](float density) {
@@ -258,16 +589,16 @@ namespace GrassControl
 		patch.shape = shape;
 		patch.created = 0;
 		patch.needsWorldLookup = false;
-		patch.spacing = (1.0f / static_cast<float>(patch.sideCount)) * width * 0.5f;
+		patch.spacing = (1.0f / static_cast<float>(patch.sideCount)) * (cellSide ? CellSize : width) * 0.5f;
 
 		patch.minSlope = RE::GrassSlopeTable()[SlopeIndex(patch.params.maxSlopeDegrees)];
 		patch.maxSlope = RE::GrassSlopeTable()[SlopeIndex(patch.params.minSlopeDegrees)];
 
-		// A patch's random stream must not depend on which worker finishes first.
+		// Seeds must not depend on scheduling
 		patch.seed = static_cast<std::uint32_t>(params.CellX) * 0x9E3779B9u ^ static_cast<std::uint32_t>(params.CellY) * 0x85EBCA6Bu ^ patch.grass.grassFormID;
 		patch.seed ^= std::rotl(std::bit_cast<std::uint32_t>(patch.start.x), 11) ^ std::rotl(std::bit_cast<std::uint32_t>(patch.start.y), 23);
 
-		candidateCount += static_cast<std::size_t>(patch.sideCount) * patch.sideCount;
+		candidateCount += candidates;
 		++patchCount;
 		publishedPatches.store(patchCount, std::memory_order_release);
 
@@ -338,7 +669,7 @@ namespace GrassControl
 		if (!*abort)
 			Run();
 
-		// Wait before reusing patch storage or returning past the native cell lock.
+		// Finish workers before releasing patch storage and locks
 		if (work) {
 			if (*abort)
 				work->tasks.cancel();
@@ -347,7 +678,7 @@ namespace GrassControl
 		}
 
 		if (!*abort) {
-			// World lookups use engine state that is only safe on this thread.
+			// World lookups stay on the calling thread
 			for (std::size_t i = 0; i < patchCount; ++i) {
 				if (patches[i].needsWorldLookup)
 					Generate(patches[i], true);
@@ -362,6 +693,21 @@ namespace GrassControl
 			}
 		}
 
+		ResetBatch();
+	}
+
+	void GrassPatchCreation::CancelWork()
+	{
+		if (work) {
+			work->tasks.cancel();
+			work->arena.execute([&] { work->tasks.wait(); });
+			work.reset();
+		}
+		ResetBatch();
+	}
+
+	void GrassPatchCreation::ResetBatch()
+	{
 		patchCount = 0;
 		candidateCount = 0;
 		publishedPatches.store(0, std::memory_order_relaxed);
@@ -385,7 +731,7 @@ namespace GrassControl
 				if (handle == data->grassHandles.end())
 					return;
 
-				// Finish full buffers into this cell's handle list so removal still owns every group.
+				// Retain every instance group for cell removal
 				patch.shape->DoneAddingInstances((*handle)->instanceGroupIndicies);
 				patch.shape->BeginAddingInstances(runtime.instanceSize);
 			}
@@ -402,10 +748,10 @@ namespace GrassControl
 		return static_cast<std::uint32_t>(REL::Module::IsAE() ? angle * 1.4222221374511719f : (angle * 0.017453292f) * 81.487328f) & 511u;
 	}
 
-	float GrassPatchCreation::Shade(const RE::NiColorA& color, Random& random, float colorRange) noexcept
+	float GrassPatchCreation::Shade(const RE::NiColorA& color, float roll, float colorRange) noexcept
 	{
 		const float luminance = (color.red * 0.31f + color.green * 0.37f) + color.blue * 0.31999999f;
-		const float shade = luminance * (((random.SignedFloat() * 0.5f) * (colorRange * 0.5f)) + (1.0f - colorRange));
+		const float shade = luminance * (((roll * 0.5f) * (colorRange * 0.5f)) + (1.0f - colorRange));
 		return shade >= 1.0f ? 0.99000001f : std::max(0.0f, shade);
 	}
 
@@ -431,22 +777,49 @@ namespace GrassControl
 		}
 	}
 
+	float GrassPatchCreation::SampleDensity(const Patch& patch, const RE::NiPoint3& position) noexcept
+	{
+		if (patch.densityField) {
+			const float cellX = static_cast<float>(patch.params.CellX) * CellSize;
+			const float cellY = static_cast<float>(patch.params.CellY) * CellSize;
+			return patch.densityField->Sample(position.x - cellX, position.y - cellY);
+		}
+
+		const float halfPatchWidth = patch.spacing * static_cast<float>(patch.sideCount);
+		const float densityX = std::clamp((position.x - patch.start.x) / halfPatchWidth, 0.0f, 2.0f);
+		const float densityY = std::clamp((position.y - patch.start.y) / halfPatchWidth, 0.0f, 2.0f);
+		const int column = std::min(static_cast<int>(densityX), 1);
+		const int row = std::min(static_cast<int>(densityY), 1);
+		const int index = row * 3 + column;
+		const float blendX = densityX - static_cast<float>(column);
+		const float blendY = densityY - static_cast<float>(row);
+		const auto& density = patch.density;
+
+		return std::lerp(std::lerp(density[index], density[index + 1], blendX),
+			std::lerp(density[index + 3], density[index + 4], blendX), blendY);
+	}
+
 	void GrassPatchCreation::Generate(Patch& patch, bool allowWorldLookup) const noexcept
 	{
 		using namespace DirectX::PackedVector;
 
 		if (!allowWorldLookup) {
 			patch.created = 0;
-			patch.resumeIndex = 0;
+			patch.resumeIndex = patch.firstCandidate;
 			patch.resumeRandomDraws = 0;
 		}
 
 		patch.needsWorldLookup = false;
-		Random random(patch.seed);
 
-		// Preserve the random stream without repeating terrain queries for completed candidates.
-		for (std::uint64_t i = 0; i < patch.resumeRandomDraws; ++i)
-			random.Next();
+		// Engine placement shares one random stream
+		const bool stablePlacement = Config::SmoothGrassPlacement;
+		Random engineRandom(patch.seed);
+
+		// Resume without repeating terrain queries
+		if (!stablePlacement) {
+			for (std::uint64_t i = 0; i < patch.resumeRandomDraws; ++i)
+				engineRandom.Next();
+		}
 
 		const auto& params = patch.params;
 		const auto& grass = patch.grass;
@@ -456,64 +829,70 @@ namespace GrassControl
 		const float originY = static_cast<float>(CellsPerOrigin * (params.CellY / CellsPerOrigin)) * CellSize;
 		alignas(16) std::array<std::byte, 248> coordinates;
 
-		const auto startX = patch.resumeIndex / patch.sideCount;
-		const auto startY = patch.resumeIndex % patch.sideCount;
+		for (auto candidateIndex = patch.resumeIndex; candidateIndex < patch.endCandidate; ++candidateIndex) {
+			const auto gridX = candidateIndex / patch.sideCount;
+			const auto gridY = candidateIndex % patch.sideCount;
+			const float column = static_cast<float>(gridX) + 0.5f;
+			const float row = static_cast<float>(gridY) + 0.5f;
+			const float densityX = (column * 2.0f) * reciprocal;
+			const float densityY = (row * 2.0f) * reciprocal;
+			const auto densityIndex = static_cast<std::size_t>(densityX) + 3 * static_cast<std::size_t>(densityY);
 
-		for (std::uint32_t x = startX; x < patch.sideCount; ++x) {
-			const float column = static_cast<float>(x) + 0.5f;
-			for (std::uint32_t y = x == startX ? startY : 0; y < patch.sideCount; ++y) {
-				const auto randomDraws = random.DrawCount();
-				const float row = static_cast<float>(y) + 0.5f;
-				const float densityX = (column * 2.0f) * reciprocal;
-				const float densityY = (row * 2.0f) * reciprocal;
-				const auto index = static_cast<std::size_t>(densityX) + 3 * static_cast<std::size_t>(densityY);
+			const float blendX = densityX - static_cast<float>(static_cast<int>(densityX));
+			const float blendY = densityY - static_cast<float>(static_cast<int>(densityY));
+			const auto& density = patch.density;
+			const float lowerDensity = blendX * density[densityIndex + 1] + (1.0f - blendX) * density[densityIndex];
+			const float upperDensity = (1.0f - blendX) * density[densityIndex + 3] + blendX * density[densityIndex + 4];
+			const float densityAtPosition = (lowerDensity * (1.0f - blendY) + upperDensity * blendY) * 32768.0f;
+			const float chanceValue = patch.densityMultiplier * densityAtPosition;
+			const auto chance = chanceValue > 0.0f ? static_cast<std::uint32_t>(std::min(chanceValue, 32768.0f)) : 0u;
 
-				const float dx = densityX - static_cast<float>(static_cast<int>(densityX));
-				const float dy = densityY - static_cast<float>(static_cast<int>(densityY));
-				const auto& density = patch.density;
-				const float lowerDensity = dx * density[index + 1] + (1.0f - dx) * density[index];
-				const float upperDensity = (1.0f - dx) * density[index + 3] + dx * density[index + 4];
-				const float densityAtPosition = (lowerDensity * (1.0f - dy) + upperDensity * dy) * 32768.0f;
+			// False defers terrain lookup to the caller
+			const auto processCandidate = [&](auto& random) {
+				if (!stablePlacement && !chance)
+					return true;
 
-				const float chanceValue = patch.densityMultiplier * densityAtPosition;
-				const auto chance = chanceValue > 0.0f ? static_cast<std::uint32_t>(std::min(chanceValue, 32768.0f)) : 0u;
-				if (!chance || (random.Next() & 0x7FFFu) >= chance)
-					continue;
+				const auto roll = random.Next() & 0x7FFFu;
+				if (!stablePlacement && roll >= chance)
+					return true;
 
-				const float px = (patch.start.x + ((column * patch.spacing) * 2.0f)) + random.SignedFloat() * patch.spacing;
-				const float py = (patch.start.y + ((row * patch.spacing) * 2.0f)) + random.SignedFloat() * patch.spacing;
-				const auto halfX = XMConvertFloatToHalf(px - originX);
-				const auto halfY = XMConvertFloatToHalf(py - originY);
+				const float candidateX = (patch.start.x + ((column * patch.spacing) * 2.0f)) + random.SignedFloat() * patch.spacing;
+				const float candidateY = (patch.start.y + ((row * patch.spacing) * 2.0f)) + random.SignedFloat() * patch.spacing;
+				const auto halfX = XMConvertFloatToHalf(candidateX - originX);
+				const auto halfY = XMConvertFloatToHalf(candidateY - originY);
 				const RE::NiPoint3 position{ originX + XMConvertHalfToFloat(halfX), originY + XMConvertHalfToFloat(halfY), 0.0f };
+
+				if (stablePlacement) {
+					const float coverage = SampleDensity(patch, position);
+					const float probability = std::clamp(coverage * patch.densityMultiplier, 0.0f, 1.0f);
+					if (static_cast<float>(roll) >= probability * 32768.0f)
+						return true;
+				}
 
 				RE::NiPoint3 interpolatedNormal;
 				RE::NiPoint3 normal;
 				RE::NiColorA color{};
 				float height = 0.0f;
 
-				// These loaded-land helpers only read terrain and perform math; they do not allocate or access engine TLS.
+				// No allocations or engine TLS
 				if (params.land->loadedData && RE::GetLandCoordData(params.land, coordinates.data(), &position, 5)) {
 					RE::GetLandData(params.land, coordinates.data(), &height, &interpolatedNormal, &normal, &color);
 				} else {
-					if (!allowWorldLookup) {
-						patch.needsWorldLookup = true;
-						patch.resumeIndex = x * patch.sideCount + y;
-						patch.resumeRandomDraws = randomDraws;
-						return;
-					}
+					if (!allowWorldLookup)
+						return false;
 
 					auto* tes = RE::TES::GetSingleton();
 					if (!tes || !tes->GetLandHeight(position, height))
-						continue;
+						return true;
 
 					RE::GetLandNormal(tes, &position, &interpolatedNormal, &normal);
 					RE::GetLandColor(tes, &position, &color);
 				}
+
 				if (!AcceptWater(params, height) || normal.z < patch.minSlope || normal.z > patch.maxSlope)
-					continue;
+					return true;
 
-				const float shade = Shade(color, random, grass.colorRange);
-
+				const float shade = Shade(color, random.SignedFloat(), grass.colorRange);
 				const float orientation = random.SignedFloat();
 				const float variation = random.SignedFloat() * grass.heightRange;
 				const Candidate candidate{ { position.x, position.y, height }, normal, shade, orientation, variation };
@@ -524,11 +903,28 @@ namespace GrassControl
 					Encode(candidate, grass.fitsToSlope, patch.instances.data() + static_cast<std::size_t>(patch.created) * InstanceHalfwords, params.CellX, params.CellY);
 
 				++patch.created;
+				return true;
+			};
+
+			const auto drawsBeforeCandidate = engineRandom.DrawCount();
+			bool completed;
+			if (stablePlacement) {
+				StableRandom random((static_cast<std::uint64_t>(patch.seed) << 32) | candidateIndex);
+				completed = processCandidate(random);
+			} else {
+				completed = processCandidate(engineRandom);
+			}
+
+			if (!completed) {
+				patch.needsWorldLookup = true;
+				patch.resumeIndex = candidateIndex;
+				patch.resumeRandomDraws = drawsBeforeCandidate;
+				return;
 			}
 		}
 	}
 
-	// Land texture lookups go through the engine's loaded-cell grid, which is only safe off the placement workers.
+	// Loaded-cell grid access must stay on the caller
 	void GrassPatchCreation::MarkBlockedTextures(Patch& patch) const
 	{
 		for (std::uint32_t i = 0; i < patch.created; ++i) {
@@ -550,6 +946,7 @@ namespace GrassControl
 		if (work && patchCount > 1) {
 			const auto caller = std::this_thread::get_id();
 			std::atomic<std::uint32_t> unavailable{ 0 };
+
 			oneapi::tbb::task_group_context context{ oneapi::tbb::task_group_context::isolated };
 			work->arena.execute([&] {
 				oneapi::tbb::parallel_for(
@@ -565,6 +962,7 @@ namespace GrassControl
 					},
 					context);
 			});
+
 			PhysicsRaycast::AddUnavailableQueries(unavailable.load(std::memory_order_relaxed));
 		}
 
@@ -579,19 +977,23 @@ namespace GrassControl
 		std::uint32_t accepted = 0;
 		for (std::uint32_t i = 0; i < patch.created && !*abort; ++i) {
 			const auto& candidate = patch.candidates[i];
-			bool keep = !candidate.onBlockedTexture;
-			if (keep && Config::RayCast) {
+			if (candidate.onBlockedTexture)
+				continue;
+
+			bool canPlace = true;
+			if (Config::RayCast) {
 				try {
-					keep = settings->CanPlaceGrass(patch.params.land, candidate.position.x, candidate.position.y, candidate.position.z, &patch.grass, false);
+					canPlace = settings->CanPlaceGrass(patch.params.land, candidate.position.x, candidate.position.y, candidate.position.z, &patch.grass, false);
 				} catch (const std::bad_alloc&) {
 					PhysicsRaycast::GetSingleton().ReportAllocationFailure();
 				}
 			}
 
-			if (keep) {
-				auto* output = patch.instances.data() + static_cast<std::size_t>(accepted++) * InstanceHalfwords;
-				Encode(candidate, patch.grass.fitsToSlope, output, patch.params.CellX, patch.params.CellY);
-			}
+			if (!canPlace)
+				continue;
+
+			auto* output = patch.instances.data() + static_cast<std::size_t>(accepted++) * InstanceHalfwords;
+			Encode(candidate, patch.grass.fitsToSlope, output, patch.params.CellX, patch.params.CellY);
 		}
 
 		patch.created = accepted;
@@ -643,6 +1045,93 @@ namespace GrassControl
 		return handle;
 	}
 
+	std::pair<RE::BSMultiStreamInstanceTriShape*, RE::CellGrassData*> GrassPatchCreation::PrepareShape(RE::BGSGrassManager* manager, RE::GrassParam& param)
+	{
+		const auto* coordinates = cell->GetCoordinates();
+		std::uint64_t typeKey = 0;
+		RE::BSFixedString modelKey;
+
+		auto* shape = RE::LoadGrassType(manager, &param, static_cast<std::uint32_t>(ShapeCoordinate(coordinates->cellX)), static_cast<std::uint32_t>(ShapeCoordinate(coordinates->cellY)), &typeKey, &modelKey);
+		if (!shape)
+			return {};
+
+		auto* handle = GrassHandle(cell, shape, typeKey, modelKey);
+
+		if (!shape->GetIsAddingInstances())
+			shape->BeginAddingInstances(InstanceHalfwords);
+
+		return { shape, handle };
+	}
+
+	void GrassPatchCreation::GenerateSmoothCell()
+	{
+		auto* land = cell->GetLand();
+		const auto* coordinates = cell->GetCoordinates();
+		const auto* minimumSize = globals::settings::minGrassSize;
+
+		if (!land || !land->loadedData || !coordinates || !minimumSize || minimumSize->GetInteger() <= 0)
+			throw std::bad_alloc();
+
+		std::vector<RE::FormID> grassTypes;
+		grassTypes.reserve(densityFields.size());
+
+		for (const auto& [id, field] : densityFields)
+			grassTypes.push_back(id);
+		std::ranges::sort(grassTypes);
+
+		for (const auto id : grassTypes) {
+			if (*abort)
+				break;
+
+			auto* grass = RE::TESForm::LookupByID<RE::TESGrass>(id);
+			if (!grass)
+				continue;
+
+			auto param = MakeGrassParam(*grass);
+			const float spacing = std::max(static_cast<float>(minimumSize->GetInteger()), param.positionRange);
+			const float patchWidth = static_cast<float>(placementManager->grassPatchSize) * 2.0f;
+			if (!std::isfinite(spacing) || spacing <= 0.0f || patchWidth <= 0.0f)
+				continue;
+
+			// Preserve the native candidate budget across patch boundaries
+			const float patchCandidatesPerSide = std::floor(patchWidth / spacing);
+			if (patchCandidatesPerSide < 1.0f)
+				continue;
+
+			const auto candidatesPerSide = static_cast<std::uint32_t>(std::clamp(std::lround((CellSize / patchWidth) * patchCandidatesPerSide), 1L, 4096L));
+			const auto [shape, handle] = PrepareShape(placementManager, param);
+			if (!shape)
+				continue;
+
+			const stl::scope_exit finish([&] { shape->DoneAddingInstances(handle->instanceGroupIndicies); });
+			RE::NiPoint3 start{ static_cast<float>(coordinates->cellX) * CellSize, static_cast<float>(coordinates->cellY) * CellSize, 0.0f };
+
+			RE::CreateGrassParams params{};
+			params.CellX = coordinates->cellX;
+			params.CellY = coordinates->cellY;
+			params.land = land;
+			params.grassPatchStart = &start;
+			params.grassParam = &param;
+			params.grassDensityPcts = param.denstityPctPerQuadVertex;
+			if (auto* multiplier = params.GetDensityMultiplier())
+				*multiplier = 1.0f;
+			params.GetDistanceFromWaterLevel() = static_cast<float>(grass->GetDistanceFromWaterLevel());
+			params.GetUnderwaterState() = static_cast<std::uint32_t>(grass->GetUnderwaterState());
+			params.GetWaterHeight() = cell->GetExteriorWaterHeight();
+			params.GetMinSlopeDegrees() = grass->GetMinSlopeDegrees();
+			params.GetMaxSlopeDegrees() = grass->GetMaxSlopeDegrees();
+
+			const auto totalCandidates = candidatesPerSide * candidatesPerSide;
+			for (std::uint32_t firstCandidate = 0; firstCandidate < totalCandidates && !*abort; firstCandidate += SmoothPatchCandidates) {
+				const auto endCandidate = std::min(firstCandidate + SmoothPatchCandidates, totalCandidates);
+				if (!Queue(placementManager, params, shape, candidatesPerSide, firstCandidate, endCandidate))
+					throw std::bad_alloc();
+			}
+
+			Flush();
+		}
+	}
+
 	std::optional<GrassPatchCreation::CliffTop> GrassPatchCreation::FindCliffTop(float x, float y, float top, float bottom) const
 	{
 		const glm::vec4 begin(x, y, top, 0), end(x, y, bottom, 0);
@@ -665,6 +1154,7 @@ namespace GrassControl
 		for (const auto& offset : offsets) {
 			const glm::vec4 begin(x + offset.x, y + offset.y, z + CliffEdgeTolerance, 0), end(x + offset.x, y + offset.y, z - CliffEdgeTolerance, 0);
 			const auto result = PhysicsRaycast::GetSingleton().CastRay(begin, end, cell, *settings);
+
 			if (result.status != PhysicsRaycast::QueryStatus::Success || result.hits.empty())
 				return false;
 		}
@@ -678,6 +1168,7 @@ namespace GrassControl
 		auto* land = cell->GetRuntimeData().cellLand;
 		alignas(16) std::array<std::byte, 248> coordinates;
 		const RE::NiPoint3 position{ x, y, 0.0f };
+
 		if (land && land->loadedData && RE::GetLandCoordData(land, coordinates.data(), &position, 5)) {
 			float height = 0.0f;
 			RE::NiPoint3 interpolatedNormal;
@@ -685,7 +1176,7 @@ namespace GrassControl
 			RE::GetLandData(land, coordinates.data(), &height, &interpolatedNormal, &normal, &color);
 		}
 
-		return Shade(color, random, colorRange);
+		return Shade(color, random.SignedFloat(), colorRange);
 	}
 
 	void GrassPatchCreation::AddCliffGrass(RE::BGSGrassManager* manager)
@@ -694,16 +1185,19 @@ namespace GrassControl
 			return;
 
 		const auto* coordinates = cell->GetCoordinates();
-		std::unordered_map<RE::TESLandTexture*, std::vector<CliffSample>> tops;
+		std::unordered_map<RE::TESLandTexture*, std::vector<RE::NiPoint3>> tops;
+
 		for (const auto& surface : CliffSurfaces::Get(cell)) {
 			if (*abort)
 				return;
 
 			const auto& center = surface.center;
 			const float radius = std::min(surface.radius, MaxCliffRadius);
+
 			for (float x = center.x - radius + CliffSampleStep * 0.5f; x < center.x + radius; x += CliffSampleStep) {
 				for (float y = center.y - radius + CliffSampleStep * 0.5f; y < center.y + radius; y += CliffSampleStep) {
 					const auto top = FindCliffTop(x, y, center.z + radius + 1.0f, center.z - radius - 1.0f);
+
 					if (top && top->formID == surface.object && top->position.GetSquaredDistance(center) <= radius * radius)
 						tops[surface.landTexture].push_back({ x, y, top->position.z });
 				}
@@ -712,17 +1206,20 @@ namespace GrassControl
 
 		std::size_t sampleCount = 0;
 		for (auto& [texture, samples] : tops) {
-			const auto position = [](const CliffSample& sample) { return std::tie(sample.x, sample.y, sample.z); };
+			const auto position = [](const RE::NiPoint3& sample) { return std::tie(sample.x, sample.y, sample.z); };
 			std::ranges::sort(samples, {}, position);
+
 			const auto duplicates = std::ranges::unique(samples, {}, position);
 			samples.erase(duplicates.begin(), duplicates.end());
 			sampleCount += samples.size();
 		}
+
 		if (sampleCount)
 			logger::debug("Cliff tops in cell ({}, {}): {} samples over {} landscape textures", coordinates->cellX, coordinates->cellY, sampleCount, tops.size());
 
 		const auto* maxTypesSetting = globals::settings::maxGrassTypesPerTexture;
 		const int maxTypes = maxTypesSetting ? std::max(1, maxTypesSetting->GetInteger()) : 7;
+
 		for (const auto& [landTexture, samples] : tops) {
 			int types = 0;
 			for (auto* grass : landTexture->textureGrassList) {
@@ -738,25 +1235,20 @@ namespace GrassControl
 		}
 	}
 
-	void GrassPatchCreation::AddCliffGrassType(RE::BGSGrassManager* manager, RE::TESGrass& grass, std::uint32_t seed, const std::vector<CliffSample>& samples)
+	void GrassPatchCreation::AddCliffGrassType(RE::BGSGrassManager* manager, RE::TESGrass& grass, std::uint32_t seed, const std::vector<RE::NiPoint3>& samples)
 	{
 		auto param = MakeGrassParam(grass);
 		const auto* minimumSize = globals::settings::minGrassSize;
 		const float spacing = std::max(param.positionRange, minimumSize ? static_cast<float>(minimumSize->GetInteger()) : 0.0f);
 		const float chance = param.denstityPctPerQuadVertex[0];
+
 		if (!std::isfinite(spacing) || spacing < 1.0f || !std::isfinite(chance) || chance <= 0.0f)
 			return;
 
 		const auto* coordinates = cell->GetCoordinates();
-		std::uint64_t typeKey = 0;
-		RE::BSFixedString modelKey;
-		auto* shape = RE::LoadGrassType(manager, &param, static_cast<std::uint32_t>(ShapeCoordinate(coordinates->cellX)), static_cast<std::uint32_t>(ShapeCoordinate(coordinates->cellY)), &typeKey, &modelKey);
+		const auto [shape, handle] = PrepareShape(manager, param);
 		if (!shape)
 			return;
-
-		if (!shape->GetIsAddingInstances())
-			shape->BeginAddingInstances(InstanceHalfwords);
-		auto* handle = GrassHandle(cell, shape, typeKey, modelKey);
 
 		const float minSlope = RE::GrassSlopeTable()[SlopeIndex(grass.GetMaxSlopeDegrees())];
 		const float maxSlope = RE::GrassSlopeTable()[SlopeIndex(grass.GetMinSlopeDegrees())];
@@ -773,11 +1265,13 @@ namespace GrassControl
 		Random random(seed);
 		const int perSide = std::max(1, static_cast<int>(CliffSampleStep / spacing));
 		const float step = CliffSampleStep / static_cast<float>(perSide);
+
 		for (const auto& sample : samples) {
 			for (int i = 0; i < perSide && !*abort; ++i) {
 				for (int j = 0; j < perSide; ++j) {
 					const float x = sample.x - CliffSampleStep * 0.5f + (static_cast<float>(i) + 0.5f) * step + random.SignedFloat() * step * 0.5f;
 					const float y = sample.y - CliffSampleStep * 0.5f + (static_cast<float>(j) + 0.5f) * step + random.SignedFloat() * step * 0.5f;
+
 					if (static_cast<float>(random.Next() & 0x7FFFu) >= chance * 32768.0f)
 						continue;
 
@@ -788,7 +1282,7 @@ namespace GrassControl
 					if (Config::RayCast && !settings->IsExempt(cell->GetRuntimeData().cellLand, x, y, top->position.z, &param) && settings->OnBlockedTexture(x, y, top->position.z))
 						continue;
 
-					// Start just above the cliff surface so only objects standing on it block the grass.
+					// Start above the cliff to avoid self-hits
 					if (Config::RayCast && !settings->CanPlaceGrass(cell->GetRuntimeData().cellLand, x, y, top->position.z + settings->RayDepth + 1.0f, &param, true))
 						continue;
 

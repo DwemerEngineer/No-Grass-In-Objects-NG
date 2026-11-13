@@ -2,6 +2,37 @@
 
 namespace GrassControl
 {
+	struct GrassDensityField
+	{
+		inline static constexpr int Side = 33;
+		inline static constexpr float Step = 128.0f;
+		std::array<float, Side * Side> values{};
+
+		static GrassDensityField Blend(const std::array<const GrassDensityField*, 9>& fields, const std::array<bool, 9>& present);
+
+		float Sample(float x, float y) const noexcept;  // Cell-relative coordinates
+	};
+
+	class GrassTerrainCache
+	{
+	public:
+		using Fields = std::unordered_map<std::uint32_t, std::shared_ptr<const GrassDensityField>>;
+		using Snapshot = std::shared_ptr<const Fields>;
+		using Key = std::tuple<std::uint32_t, int, int>;
+		inline static constexpr std::size_t Capacity = 256;
+
+		void Publish(std::uint32_t world, int x, int y, Snapshot fields);
+
+		std::array<Snapshot, 9> Neighborhood(std::uint32_t world, int x, int y);
+
+		void Clear();
+
+	private:
+		std::mutex mutex;
+		std::map<Key, Snapshot> tiles;
+		std::deque<Key> order;
+	};
+
 	class RaycastHelper;
 
 	class GrassPatchCreation final
@@ -13,30 +44,35 @@ namespace GrassControl
 		GrassPatchCreation(const GrassPatchCreation&) = delete;
 		GrassPatchCreation& operator=(const GrassPatchCreation&) = delete;
 
-		static void Install();
+		static void Enable();
 		static RE::TESObjectCELL* GetCell();
-		static bool IsEnabled() { return enabled; }
 
-		// Extended-grid shapes use block corners; native shapes use block indices.
+		// Block corners for extended grass, block indices otherwise
 		static int ShapeCoordinate(int cell);
 
-		// Reserve cores for frame processing during gameplay.
 		static void LimitParallelism(bool limit);
 
 		static void ReleaseNativePlacement();
 		using AddCellGrassFunc = void (*)(RE::BGSGrassManager*, RE::TESObjectCELL*, bool*);
 
-		// Outside the extended grid, defer native placement until collision is ready.
+		// Wait for collision outside the extended grid
 		static void AddCell(RE::BGSGrassManager* manager, RE::TESObjectCELL* cell, bool* abort, AddCellGrassFunc add);
 		static std::uint32_t CreatePatch(RE::BGSGrassManager* manager, RE::CreateGrassParams* params, RE::BSMultiStreamInstanceTriShape* shape);
 		static void FinishInstances(RE::BSMultiStreamInstanceTriShape* shape, RE::BSTArray<std::uint32_t>& instances);
 
-		// Cached grass needs collision only for additional cliff placements.
+		using BeginCellFunc = RE::BSTArray<RE::CellGrassData*>* (*)(RE::ExtraDataList*, bool);
+		using SelectGrassFunc = std::uint32_t (*)(RE::TESObjectLAND*, std::uint32_t, std::uint32_t, RE::GrassParam*, std::uint32_t);
+
+		static RE::BSTArray<RE::CellGrassData*>* BeginCell(RE::ExtraDataList* extraList, bool create, BeginCellFunc begin);
+		static std::uint32_t SelectGrass(RE::TESObjectLAND* land, std::uint32_t quadrant, std::uint32_t vertex, RE::GrassParam* params, std::uint32_t capacity, SelectGrassFunc select);
+
 		static bool NeedsCollision(const RE::BGSGrassManager* manager, bool fromCache);
-
 		bool PrepareCell(bool requireCollision = true);
+		void PrepareSmooth(RE::BGSGrassManager* manager, bool fromCache);
 
-		// Caller holds grassCreateLock.
+		static GrassTerrainCache::Snapshot CaptureTerrain(RE::TESObjectCELL* cell);
+		static void ClearTerrainCache();
+
 		void AddCliffGrass(RE::BGSGrassManager* manager);
 
 	private:
@@ -44,36 +80,14 @@ namespace GrassControl
 		inline static constexpr std::uint32_t HalfwordBytes = sizeof(std::uint16_t);
 		inline static constexpr std::size_t MaxBatchCandidates = 16384;
 		inline static constexpr std::size_t DispatchCandidates = 1024;
+		inline static constexpr std::uint32_t SmoothPatchCandidates = 256;
 		inline static constexpr std::uint32_t InstanceBufferBytes = 0x40000;
 		inline static constexpr int CellsPerOrigin = 12;
-		// Sharing a shape avoids a separate cull and render pass for every cell.
 		inline static constexpr int CellsPerShape = CellsPerOrigin;
 		inline static constexpr float CellSize = 4096.0f;
 		inline static constexpr std::size_t GameplayParallelism = 6;
 
-		// Skyrim 1.7.99 inserts the density multiplier before the water and slope parameters.
-		struct ExtendedGrassParams
-		{
-			int cellX;
-			int cellY;
-			int quad;
-			std::uint32_t padding;
-			RE::TESObjectLAND* land;
-			RE::NiPoint3* grassPatchStart;
-			RE::GrassParam* grassParam;
-			float* grassDensityPcts;
-			float densityMultiplier;
-			float distanceFromWaterLevel;
-			std::uint32_t underwaterState;
-			float waterHeight;
-			std::uint32_t minSlopeDegrees;
-			std::uint32_t maxSlopeDegrees;
-			std::array<std::byte, 8> trailingPadding;
-		};
-		static_assert(sizeof(ExtendedGrassParams) == sizeof(RE::CreateGrassParams));
-		static_assert(offsetof(ExtendedGrassParams, densityMultiplier) == 0x30);
-		static_assert(offsetof(ExtendedGrassParams, maxSlopeDegrees) == 0x44);
-
+		// Engine-compatible random sequence
 		class Random final
 		{
 		public:
@@ -86,6 +100,18 @@ namespace GrassControl
 			std::array<std::uint32_t, 624> state;
 			std::size_t index = 623;
 			std::uint64_t draws = 0;
+		};
+
+		// Per-candidate PCG32 (XSH-RR)
+		class StableRandom final
+		{
+		public:
+			explicit StableRandom(std::uint64_t seed);
+			std::uint32_t Next();
+			float SignedFloat();
+
+		private:
+			std::uint64_t state;
 		};
 
 		struct Candidate
@@ -104,10 +130,13 @@ namespace GrassControl
 			RE::GrassParam grass;
 			RE::NiPoint3 start;
 			std::array<float, 9> density;
+			std::shared_ptr<const GrassDensityField> densityField;
 			RE::BSMultiStreamInstanceTriShape* shape;
 			std::vector<std::uint16_t> instances;
 			std::vector<Candidate> candidates;
 			std::uint32_t sideCount;
+			std::uint32_t firstCandidate = 0;
+			std::uint32_t endCandidate = 0;
 			std::uint32_t seed;
 			std::uint32_t created = 0;
 			bool needsWorldLookup = false;
@@ -151,14 +180,13 @@ namespace GrassControl
 
 			oneapi::tbb::task_arena arena;
 			BackgroundPriority priority{ arena };
-			// Cancellation must not propagate between placement and another plugin's tasks.
 			oneapi::tbb::task_group_context context{ oneapi::tbb::task_group_context::isolated };
 			oneapi::tbb::task_group tasks{ context };
 		};
 
 		inline static constexpr float CliffSampleStep = 128.0f;
 		inline static constexpr float MaxCliffRadius = 8192.0f;
-		// A blade on a cliff needs ground within this height around its footprint, so it never hangs over an edge.
+		// Allowed ground drop at cliff edges
 		inline static constexpr float CliffEdgeTolerance = 30.0f;
 		inline static constexpr float MinBladeReach = 16.0f;
 
@@ -169,25 +197,32 @@ namespace GrassControl
 			RE::FormID formID;
 		};
 
-		struct CliffSample
-		{
-			float x;
-			float y;
-			float z;
-		};
-
-		// Returns only the highest hit, and only if it belongs to a cliff.
+		// Only the highest hit counts
 		std::optional<CliffTop> FindCliffTop(float x, float y, float top, float bottom) const;
-		// Requires level support at the blade's reach on all four sides.
+		// Check support on all four sides
 		bool SupportedAround(float x, float y, float z, float reach) const;
-		void AddCliffGrassType(RE::BGSGrassManager* manager, RE::TESGrass& grass, std::uint32_t seed, const std::vector<CliffSample>& samples);
+		void AddCliffGrassType(RE::BGSGrassManager* manager, RE::TESGrass& grass, std::uint32_t seed, const std::vector<RE::NiPoint3>& samples);
 		float LandShade(float x, float y, Random& random, float colorRange) const;
 
-		bool Queue(RE::BGSGrassManager* manager, const RE::CreateGrassParams& params, RE::BSMultiStreamInstanceTriShape* shape);
+		using DensityFields = GrassTerrainCache::Fields;
+		inline static GrassTerrainCache terrainCache;
+
+		static std::vector<RE::TESGrass*> TextureGrasses(RE::TESLandTexture* texture);
+		static DensityFields ReadDensityFields(RE::TESObjectLAND* land);
+		std::pair<RE::BSMultiStreamInstanceTriShape*, RE::CellGrassData*> PrepareShape(RE::BGSGrassManager* manager, RE::GrassParam& param);
+		void GenerateSmoothCell();
+
+		std::shared_ptr<const GrassDensityField> DensityField(RE::TESObjectLAND* land, RE::FormID grassID);
+
+		bool Queue(RE::BGSGrassManager* manager, const RE::CreateGrassParams& params, RE::BSMultiStreamInstanceTriShape* shape, std::uint32_t cellSide = 0, std::uint32_t first = 0, std::uint32_t end = 0);
 		void Flush();
+		void CancelWork();
+		void ResetBatch();
 		void Dispatch();
 		void Run() noexcept;
 		void Generate(Patch& patch, bool allowWorldLookup = false) const noexcept;
+		static float SampleDensity(const Patch& patch, const RE::NiPoint3& position) noexcept;
+
 		void MarkBlockedTextures(Patch& patch) const;
 		void Filter(Patch& patch);
 		void FilterPatches();
@@ -195,14 +230,14 @@ namespace GrassControl
 		void Commit(Patch& patch);
 		void Encode(const Candidate& candidate, bool fitsToSlope, std::uint16_t* instance, int cellX, int cellY) const noexcept;
 		static std::uint32_t SlopeIndex(std::uint32_t degrees);
-		static float Shade(const RE::NiColorA& color, Random& random, float colorRange) noexcept;
+		// roll is in [-1, 1]
+		static float Shade(const RE::NiColorA& color, float roll, float colorRange) noexcept;
 		bool AcceptWater(const RE::CreateGrassParams& params, float height) const;
 
 		inline static std::optional<oneapi::tbb::global_control> parallelismControl;
 		inline static bool enabled = false;
-		inline static bool extendedParameters = false;
 		inline static thread_local GrassPatchCreation* current = nullptr;
-		// Engine placement writes grassManager->instanceData, which AddCellGrass reads back after the call returns.
+		// Keep instanceData locked until AddCellGrass consumes it
 		inline static std::mutex nativeMutex;
 		inline static thread_local bool holdsNative = false;
 
@@ -210,8 +245,12 @@ namespace GrassControl
 		RE::TESObjectCELL* cell;
 		bool* abort;
 		std::shared_ptr<const RaycastHelper> settings;
-		// Published patches cannot move while workers are reading their buffers.
+		// Worker buffer addresses must stay fixed
 		std::array<Patch, 64> patches;
+		DensityFields densityFields;
+		RE::BGSGrassManager* placementManager = nullptr;
+		bool smoothReady = false;
+		bool smoothCompleted = false;
 		std::size_t patchCount = 0;
 		std::size_t candidateCount = 0;
 		std::atomic<std::size_t> publishedPatches{ 0 };

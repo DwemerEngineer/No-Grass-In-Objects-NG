@@ -48,8 +48,9 @@ namespace GrassControl::Config
 	inline bool Updating = false;
 	inline bool loadFromBSA = false;
 	inline bool ThreadedGrassPlacement = true;
+	inline bool SmoothGrassPlacement = true;
 
-	// Derived from the PrecacheGrass marker beside the game executable.
+	// Set by the PrecacheGrass marker beside the executable
 	inline bool GeneratingCache = false;
 
 	inline std::mutex iniMutex;
@@ -102,7 +103,8 @@ namespace GrassControl::Config
 		{ "GrassConfig", "Freeze-check-time", &FreezeTime, ";Controls how long until the game is considered frozen in ms since the last file was created, default is a minute and a half." },
 		{ "GrassConfig", "Updating-Cache", &Updating, ";If you are generating a cache for a worldspace you have not generated yet, set this true. Otherwise, the cache files in your grass folder will be deleted. If you are updating a worldspace, then move all files you do not want to be deleted to a new folder and replace the old files in the folder once you have generated new cache files. Then rename/move the folder back." },
 		{ "GrassConfig", "Load-from-BSA", &loadFromBSA, ";Disables the empty grass folder/missing grass cache message displayed in the main menu when the grass folder is empty. If you pack your cache in to a BSA, you will want to enabled this to remove the message as it does not detect the packed cache files." },
-		{ "GrassConfig", "Threaded-grass-placement", &ThreadedGrassPlacement, ";Spread grass placement over several threads. Grass placed by NGIO is laid out differently from the game's own placement and from cache files made without NGIO, so blades rearrange when such a cached cell becomes active." },
+		{ "GrassConfig", "Threaded-grass-placement", &ThreadedGrassPlacement, ";Spreads grass placement over several threads, allowing grass work to be done in parallel, massively speeding up placement. Grass placed by NGIO with this on as a result will slightly differ from the game's own placement and from cache files made without NGIO." },
+		{ "GrassConfig", "Smooth-grass-placement", &SmoothGrassPlacement, ";Keep each grass spot stable when a cell is regenerated, and blend grass density using terrain texture coverage at each blade instead of coarse patch samples. Places every eligible grass type over the whole cell and blends density across neighboring cell and quadrant edges. Uses the same placement for runtime and cache generation. Regenerate existing grass caches after changing this setting." },
 	});
 
 	inline constexpr std::string_view iniPath = "Data/SKSE/Plugins/GrassControl.ini";

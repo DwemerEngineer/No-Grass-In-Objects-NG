@@ -109,6 +109,8 @@ namespace GrassControl::DistantGrass
 		}
 		lock.unlock();
 
+		patchCreation.PrepareSmooth(manager, fromCache);
+
 		const auto unavailableBefore = PhysicsRaycast::UnavailableQueries();
 		if (have == GrassState::None) {
 			manager->AddCellGrass(cell, abort);

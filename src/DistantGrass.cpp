@@ -208,6 +208,7 @@ namespace GrassControl::DistantGrass
 		}
 
 		land->LoadVertices(false, true);
+		GrassPatchCreation::CaptureTerrain(cell);
 	}
 
 	void LoadDistantCellNow(std::uintptr_t ws, int x, int y)

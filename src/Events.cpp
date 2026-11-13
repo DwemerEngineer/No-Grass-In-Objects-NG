@@ -2,6 +2,7 @@
 #include "GrassControl/CliffSurfaces.h"
 #include "GrassControl/Config.h"
 #include "GrassControl/DistantGrass.h"
+#include "GrassControl/GrassPatchCreation.h"
 #include "GrassControl/Main.h"
 #include "GrassControl/PhysicsRaycast.h"
 
@@ -22,6 +23,7 @@ namespace GrassControl::Events
 				PhysicsRaycast::GetSingleton().SetQueriesDisabled(!ui || ui->IsMenuOpen(RE::MainMenu::MENU_NAME));
 				if (a_event->opening) {
 					CliffSurfaces::Clear();
+					GrassPatchCreation::ClearTerrainCache();
 					if (Config::ExtendGrassDistance)
 						DistantGrass::ResetGridUpdates();
 				}
