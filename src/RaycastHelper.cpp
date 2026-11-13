@@ -1,5 +1,6 @@
 #include "GrassControl/RaycastHelper.h"
 #include "GrassControl/PhysicsRaycast.h"
+#include "GrassControl/Engine.h"
 
 namespace GrassControl
 {
@@ -30,7 +31,7 @@ namespace GrassControl
 		return param && Grasses && Grasses->Contains(param->grassFormID);
 	}
 
-	bool RaycastHelper::OnBlockedTexture(float x, float y, float z) const
+	bool RaycastHelper::OnBlockedTexture(RE::TESObjectLAND* land, float x, float y, float z) const
 	{
 		auto* tes = RE::TES::GetSingleton();
 		if (!Textures || !tes)
@@ -40,7 +41,11 @@ namespace GrassControl
 		const std::array points = { RE::NiPoint3{ x, y, z }, RE::NiPoint3{ x + width, y, z }, RE::NiPoint3{ x - width, y, z }, RE::NiPoint3{ x, y + width, z }, RE::NiPoint3{ x, y - width, z } };
 		const std::size_t count = width > 0 ? points.size() : 1;
 		for (std::size_t i = 0; i < count; ++i) {
-			if (auto* texture = tes->GetLandTexture(points[i]); texture && Textures->Contains(texture->GetFormID()))
+			// Cells outside the loaded grid only have their own land to read.
+			auto* texture = tes->GetLandTexture(points[i]);
+			if (!texture && land && land->loadedData)
+				texture = RE::GetLandTexture(land, &points[i]);
+			if (texture && Textures->Contains(texture->GetFormID()))
 				return true;
 		}
 

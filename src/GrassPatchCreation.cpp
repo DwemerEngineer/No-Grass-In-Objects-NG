@@ -930,7 +930,7 @@ namespace GrassControl
 		for (std::uint32_t i = 0; i < patch.created; ++i) {
 			auto& candidate = patch.candidates[i];
 			const auto& position = candidate.position;
-			candidate.onBlockedTexture = !settings->IsExempt(patch.params.land, position.x, position.y, position.z, &patch.grass) && settings->OnBlockedTexture(position.x, position.y, position.z);
+			candidate.onBlockedTexture = !settings->IsExempt(patch.params.land, position.x, position.y, position.z, &patch.grass) && settings->OnBlockedTexture(patch.params.land, position.x, position.y, position.z);
 		}
 	}
 
@@ -1279,7 +1279,7 @@ namespace GrassControl
 					if (!top || top->normal.z < minSlope || top->normal.z > maxSlope || !SupportedAround(x, y, top->position.z, reach))
 						continue;
 
-					if (Config::RayCast && !settings->IsExempt(cell->GetRuntimeData().cellLand, x, y, top->position.z, &param) && settings->OnBlockedTexture(x, y, top->position.z))
+					if (Config::RayCast && !settings->IsExempt(cell->GetRuntimeData().cellLand, x, y, top->position.z, &param) && settings->OnBlockedTexture(cell->GetRuntimeData().cellLand, x, y, top->position.z))
 						continue;
 
 					// Start above the cliff to avoid self-hits

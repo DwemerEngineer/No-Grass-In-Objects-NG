@@ -6,17 +6,13 @@
 
 namespace GrassControl::CliffSurfaces
 {
-	// Match copied textures by filename if the directory differs
+	// Prefer exact paths with grass, then filename matches
 	static RE::TESLandTexture* LandTextureFor(std::string_view texturePath)
 	{
-		const auto& index = GetTextureIndex();
+		if (auto* texture = GetTextureIndex().Find(texturePath))
+			return texture;
 
 		const auto path = NormalizeTexturePath(texturePath);
-		if (const auto it = index.byPath.find(path); it != index.byPath.end() && !it->second->textureGrassList.empty())
-			return it->second;
-		if (const auto it = index.byStem.find(std::string(FileStem(path))); it != index.byStem.end())
-			return it->second;
-
 		std::scoped_lock lock(unmatchedMutex);
 		if (unmatched.insert(path).second)
 			logger::info("Cliff texture {} matches no landscape texture", path);
@@ -36,17 +32,11 @@ namespace GrassControl::CliffSurfaces
 		}
 
 		auto* geometry = object->AsGeometry();
-		if (!geometry || !geometry->AsTriShape() || !(geometry->worldBound.radius > 0.0f))
+		if (!geometry || !(geometry->worldBound.radius > 0.0f))
 			return;
 
-		const auto& runtime = geometry->GetGeometryRuntimeData();
-		auto* property = netimmerse_cast<RE::BSLightingShaderProperty*>(runtime.shaderProperty.get());
-		using enum RE::BSShaderProperty::EShaderPropertyFlag;
-		if (!property || property->flags.any(kSkinned, kDecal, kDynamicDecal, kTreeAnim))
-			return;
-
-		// Keep vertex-alpha and alpha-tested cliff edges, but skip translucent shapes
-		if (const auto* alpha = runtime.alphaProperty.get(); alpha && alpha->GetAlphaBlending() && !alpha->GetAlphaTesting())
+		auto* property = GetSurfaceShader(*geometry);
+		if (!property)
 			return;
 
 		if (rule && !Util::IsShapeAllowed(geometry->name.c_str(), root, rule->allowedShapes, rule->blockedShapes))

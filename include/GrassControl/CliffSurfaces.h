@@ -15,6 +15,22 @@ namespace GrassControl::CliffSurfaces
 
 	inline constexpr std::uint32_t MaxNodesPerCliff = 4096;
 
+	inline RE::BSLightingShaderProperty* GetSurfaceShader(RE::BSGeometry& geometry)
+	{
+		if (!geometry.AsTriShape() || geometry.GetFlags().any(RE::NiAVObject::Flag::kHidden))
+			return nullptr;
+
+		const auto& runtime = geometry.GetGeometryRuntimeData();
+		auto* property = netimmerse_cast<RE::BSLightingShaderProperty*>(runtime.shaderProperty.get());
+		using enum RE::BSShaderProperty::EShaderPropertyFlag;
+		if (!property || property->flags.none(kZBufferWrite) || property->flags.any(kSkinned, kDecal, kDynamicDecal, kTreeAnim, kRefraction, kTempRefraction))
+			return nullptr;
+
+		// Alpha-tested cliff edges can also use alpha blending.
+		const auto* alpha = runtime.alphaProperty.get();
+		return alpha && alpha->GetAlphaBlending() && !alpha->GetAlphaTesting() ? nullptr : property;
+	}
+
 	inline std::mutex unmatchedMutex;
 	inline std::unordered_set<std::string> unmatched;
 
@@ -37,10 +53,44 @@ namespace GrassControl::CliffSurfaces
 		return slash == std::string_view::npos ? normalized : normalized.substr(slash + 1);
 	}
 
+	inline bool IsNoGrassVariant(RE::TESLandTexture* texture)
+	{
+		const auto* retainedID = texture->GetFormEditorID();
+		std::string editorID = retainedID ? retainedID : "";
+		// LTEX does not normally retain its editor ID, so read EDID through the game's plugin reader.
+		if (editorID.empty()) {
+			for (auto* source : { texture->GetFile(), texture->GetFile(0) }) {
+				if (!source)
+					continue;
+				auto* file = source->Duplicate();
+				if (!file || !file->SeekForm(texture) || !file->SeekNextSubrecordType(0x44494445))  // EDID
+					continue;
+				editorID.resize(file->GetCurrentSubRecordSize());
+				if (!file->ReadData(editorID.data(), static_cast<std::uint32_t>(editorID.size())))
+					editorID.clear();
+				if (!editorID.empty())
+					break;
+			}
+		}
+		std::ranges::transform(editorID, editorID.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		return editorID.find("nograss") != std::string::npos;
+	}
+
 	struct TextureIndex
 	{
 		std::unordered_map<std::string, RE::TESLandTexture*> byPath;
 		std::unordered_map<std::string, RE::TESLandTexture*> byStem;
+
+		RE::TESLandTexture* Find(std::string_view texturePath) const
+		{
+			const auto path = NormalizeTexturePath(texturePath);
+			const auto exact = byPath.find(path);
+			if (exact != byPath.end() && !exact->second->textureGrassList.empty())
+				return exact->second;
+			if (const auto it = byStem.find(std::string(FileStem(path))); it != byStem.end())
+				return it->second;
+			return exact != byPath.end() ? exact->second : nullptr;
+		}
 	};
 
 	inline const TextureIndex& GetTextureIndex()
@@ -49,13 +99,18 @@ namespace GrassControl::CliffSurfaces
 			TextureIndex result;
 			auto* data = RE::TESDataHandler::GetSingleton();
 			std::unordered_map<const RE::TESFile*, std::size_t> loadOrder;
+			std::unordered_map<RE::TESLandTexture*, bool> noGrassVariants;
 			for (const auto* file : data->files)
 				loadOrder.emplace(file, loadOrder.size() + 1);
 
-			const auto priority = [&](const RE::TESLandTexture* texture) {
+			const auto priority = [&](RE::TESLandTexture* texture) {
 				// GetFile() identifies the winning override
 				const auto it = loadOrder.find(texture->GetFile());
-				return std::pair{ !texture->textureGrassList.empty(), it != loadOrder.end() ? it->second : 0 };
+				const auto [variant, inserted] = noGrassVariants.try_emplace(texture);
+				if (inserted)
+					variant->second = IsNoGrassVariant(texture);
+				// A NoGrass variant only loses to another texture with grass; mods can give it grass and add their own bare copy.
+				return std::tuple{ !texture->textureGrassList.empty(), !variant->second, it != loadOrder.end() ? it->second : 0 };
 			};
 			const auto add = [&](auto& entries, std::string key, RE::TESLandTexture* texture) {
 				auto& match = entries[std::move(key)];

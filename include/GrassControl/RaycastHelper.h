@@ -32,8 +32,8 @@ namespace GrassControl
 		// Exempt candidates skip texture and collision checks
 		bool IsExempt(RE::TESObjectLAND* land, float x, float y, float z, const RE::GrassParam* param) const;
 
-		// Loaded-cell grid access is not safe on placement workers
-		bool OnBlockedTexture(float x, float y, float z) const;
+		// Loaded-cell grid and land access must stay on the caller
+		bool OnBlockedTexture(RE::TESObjectLAND* land, float x, float y, float z) const;
 
 		bool IsCliff(RE::FormID formID) const;
 
