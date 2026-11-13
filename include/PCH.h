@@ -82,6 +82,18 @@ namespace stl
 {
 	using namespace SKSE::stl;
 
+	inline bool is_ae_17()
+	{
+		return REL::Module::IsAE() && REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99;
+	}
+
+	// SE, AE before 1.7.99, VR, AE 1.7.99+
+	template <class T>
+	[[nodiscard]] T relocate_runtime(T se, T ae, T vr, T ae17)
+	{
+		return is_ae_17() ? ae17 : REL::Relocate(se, ae, vr);
+	}
+
 	template <class T>
 	void write_thunk_jump(std::uintptr_t a_src)
 	{

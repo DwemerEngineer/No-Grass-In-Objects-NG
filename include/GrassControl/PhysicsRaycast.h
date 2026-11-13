@@ -48,8 +48,8 @@ namespace GrassControl
 			return instance;
 		}
 
-		// Exposes waiting writers so grass readers can yield before taking the world lock.
-		static void InstallWriterSignal();
+		// Give waiting writers priority over grass readers
+		static void EnterWriteLock(RE::BSReadWriteLock* lock);
 
 		RayResult CastRay(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL* cell, const RaycastHelper& settings, bool ignoreCliff = false);
 
@@ -71,15 +71,15 @@ namespace GrassControl
 
 		void ReportStatistics();
 
-		// Grass dispatch and DebugMessageBox require the game thread.
+		// Game thread only
 		void Update();
 
-		// Counts unavailable queries on this thread; affected grass needs another filtering pass.
+		// Thread-local count of unavailable queries that need a filtering retry
 		static std::uint32_t UnavailableQueries() { return unavailableQueries; }
 
 		static void AddUnavailableQueries(std::uint32_t count) { unavailableQueries += count; }
 
-		// Returns false if the thread has no usable Havok heap after initialization.
+		// Returns false if no Havok heap is available
 		static bool EnsureThreadMemory();
 
 	private:
@@ -92,11 +92,9 @@ namespace GrassControl
 		static bool ValidHit(float fraction, float x, float y, float z);
 		static bool ValidRay(const glm::vec4& start, const glm::vec4& end);
 
-		// Pending engine writers take priority over grass queries.
 		class WorldReadGate final
 		{
 		public:
-			void InstallWriterSignal();
 			void EnterWriteLock(RE::BSReadWriteLock* lock);
 			void Enter(RE::bhkWorld* world);
 			void Exit();
@@ -104,7 +102,6 @@ namespace GrassControl
 		private:
 			std::atomic<RE::BSReadWriteLock*> watchedLock{ nullptr };
 			std::atomic<std::uint32_t> watchedWriters{ 0 };
-			bool installed = false;
 			inline static thread_local RE::BSReadWriteLock* heldLock = nullptr;
 			inline static thread_local std::uint32_t depth = 0;
 		};
@@ -140,15 +137,13 @@ namespace GrassControl
 			return memory;
 		}
 
-		// Share snapshots across placement threads to avoid repeated model walks under the renderer lock.
+		// Share snapshots between workers to avoid repeated scene walks under the renderer lock
 		struct ShapeCache
 		{
 			std::mutex mutex;
 			std::unordered_map<std::uint32_t, std::shared_ptr<const Util::ShapeSnapshot>> snapshots;
 			std::chrono::steady_clock::time_point snapshotsTaken = std::chrono::steady_clock::now();
 		};
-
-		static void EnterWriteLock(RE::BSReadWriteLock* lock);
 
 		struct alignas(16) BoxInfo
 		{
@@ -180,7 +175,7 @@ namespace GrassControl
 			bool ignoreCliff;
 		};
 
-		// Implements hkpCdBodyPairCollector ABI: virtual slots 0-2 and earlyOut at +8.
+		// hkpCdBodyPairCollector layout, virtual slots 0-2 and earlyOut at +8
 		class BodyCollector final
 		{
 		public:
@@ -214,7 +209,7 @@ namespace GrassControl
 
 			bool PrepareShape(const RaycastHelper& settings, float halfWidthX, float halfWidthY, float radius, float height);
 
-			// Must remain unattached so dimensions can change without updating broadphase pairs.
+			// Keep unattached so resizing does not require broadphase updates
 			std::unique_ptr<RE::hkpSimpleShapePhantom, HavokDelete> shapePhantom;
 			RE::NiPointer<RE::bhkShape> shape;
 			int shapeMode = -1;
@@ -240,7 +235,7 @@ namespace GrassControl
 
 		WorldReadGate worldReadGate;
 
-		// Exclusive access drains active queries before loading can replace their world.
+		// Drain active queries before loading replaces their world
 		std::shared_mutex queryMutex;
 		inline static thread_local QueryResources resources;
 		inline static thread_local std::uint32_t unavailableQueries = 0;

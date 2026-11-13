@@ -15,11 +15,6 @@ namespace GrassControl
 {
 	using namespace Xbyak;
 
-	static bool UpdatedRuntime()
-	{
-		return REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99;
-	}
-
 	template <class T>
 	static void OverrideSetting(const char* name, T value)
 	{
@@ -80,8 +75,8 @@ namespace GrassControl
 		};
 
 		const auto addCellGrass = RELOCATION_ID(15204, 15372).address();
-		const auto createPatchCall = addCellGrass + (UpdatedRuntime() ? 0x519 : REL::Relocate(0x4FF, 0x4FF, 0x4FF));
-		const auto finishInstancesCall = addCellGrass + (UpdatedRuntime() ? 0x5EC : REL::Relocate(0x5E0, 0x5DC, 0x5E0));
+		const auto createPatchCall = addCellGrass + stl::relocate_runtime(0x4FF, 0x4FF, 0x4FF, 0x519);
+		const auto finishInstancesCall = addCellGrass + stl::relocate_runtime(0x5E0, 0x5DC, 0x5E0, 0x5EC);
 
 		auto& trampoline = SKSE::GetTrampoline();
 		CreatePatchCall createPatch(createPatchCall + 5);
@@ -90,7 +85,7 @@ namespace GrassControl
 
 		if (Config::SmoothGrassPlacement) {
 			const auto beginSite = addCellGrass + REL::Relocate(0x14B, 0x149, 0x14B);
-			const auto selectSite = addCellGrass + (UpdatedRuntime() ? 0x29C : REL::Relocate(0x28B, 0x28B, 0x28B));
+			const auto selectSite = addCellGrass + stl::relocate_runtime(0x28B, 0x28B, 0x28B, 0x29C);
 			stl::write_thunk_call<BeginGrassCell>(beginSite);
 			stl::write_thunk_call<SelectCellGrass>(selectSite);
 		}
@@ -99,9 +94,16 @@ namespace GrassControl
 		logger::info("Shared grass placement enabled{}.", Config::ThreadedGrassPlacement ? " with placement workers" : "");
 	}
 
-
 	namespace Plugin
 	{
+		struct WorldWriteLock
+		{
+			static void thunk(RE::BSReadWriteLock* lock)
+			{
+				PhysicsRaycast::EnterWriteLock(lock);
+			}
+		};
+
 		struct MainUpdate
 		{
 			static void thunk()
@@ -154,21 +156,18 @@ namespace GrassControl
 
 		void InstallHooks()
 		{
-			const bool marketplace = REL::Relocate(false, REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_6_1130);
+			const bool marketplace = REL::Module::IsAE() && REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_6_1130;
 
-			if (UpdatedRuntime())
-				stl::write_thunk_call<MainUpdate>(RELOCATION_ID(35565, 36564).address() + 0xC3D);
-			else
-				stl::write_thunk_call<MainUpdate>(RELOCATION_ID(35565, 36564).address() + REL::Relocate(0x748, (marketplace ? 0xC2b : 0xC26), 0x7EE));
+			stl::write_thunk_call<MainUpdate>(RELOCATION_ID(35565, 36564).address() + stl::relocate_runtime(0x748, marketplace ? 0xC2B : 0xC26, 0x7EE, 0xC3D));
 
 			if (Config::ProfilerReport) {
 				if (marketplace)
-					stl::write_thunk_call<ConsoleOpen>(REL::ID(442669).address() + (UpdatedRuntime() ? 0x16B : 0x15D));
+					stl::write_thunk_call<ConsoleOpen>(REL::ID(442669).address() + stl::relocate_runtime(0x15D, 0x15D, 0x15D, 0x16B));
 				else
 					stl::write_thunk_call<ConsoleOpen>(RELOCATION_ID(50155, 51082).address() + REL::Relocate(0x142, 0x15C, 0x14F));
 			}
 
-			stl::write_thunk_call<AddCellGrassNow>(RELOCATION_ID(13148, 13288).address() + (UpdatedRuntime() ? 0x9D9 : REL::Relocate(0x905, 0xB29)));
+			stl::write_thunk_call<AddCellGrassNow>(RELOCATION_ID(13148, 13288).address() + stl::relocate_runtime(0x905, 0xB29, 0x905, 0x9D9));
 			stl::write_thunk_jump<AddCellGrassTaskRun>(RELOCATION_ID(13138, 13278).address() + 0xF);
 		}
 
@@ -178,7 +177,7 @@ namespace GrassControl
 				if (REL::Module::IsVR())
 					OverrideSetting("bLoadVRPlayroom:VR", false);
 
-				// Matching uGridsToLoad disables large-reference loading beyond the grid being cached.
+				// Match uGridsToLoad to disable large references beyond the cached grid
 				OverrideSetting("uLargeRefLODGridSize:General", globals::GridsToLoad());
 
 				Generation::ApplyPatches();
@@ -198,20 +197,20 @@ namespace GrassControl
 
 			InstallGrassPlacementHooks();
 
-			// Patched while the game is still single-threaded; the engine's write lock is in constant use once it runs.
+			// Patch before engine threads start using the write lock
 			if (Config::RayCast || Config::GrassCliffs)
-				PhysicsRaycast::InstallWriterSignal();
+				SKSE::GetTrampoline().write_branch<5>(RELOCATION_ID(66977, 68234).address(), WorldWriteLock::thunk);
 
 			if (Config::SuperDenseGrass) {
-				const auto addr = RELOCATION_ID(15202, 15370).address() + REL::Relocate(0xAE5 - 0x890, 0x258);
+				const auto addr = RELOCATION_ID(15202, 15370).address() + REL::Relocate(0xAE5 - 0x890, 0x258, 0xAE5 - 0x890);
 				const int mode = std::clamp(Config::SuperDenseMode, 0, 12);
 				if (mode != 7)
 					REL::safe_write(addr + 2, static_cast<std::uint8_t>(mode));
 			}
 
-			// Shared placement starts a new instance buffer when a shape fills; engine placement would overrun it.
+			// Shared placement starts a new buffer when full, while native placement would overrun it
 			if (Config::ExtendGrassCount)
-				REL::safe_write(RELOCATION_ID(15220, 15385).address() + REL::Relocate(0x433 - 0x3C0, 0x68), REL::NOP6, 6);
+				REL::safe_write(RELOCATION_ID(15220, 15385).address() + REL::Relocate(0x433 - 0x3C0, 0x68, 0x433 - 0x3C0), REL::NOP6, 6);
 
 			if (Config::UseGrassCache)
 				GidFileCache::FixFileFormat();
@@ -220,7 +219,7 @@ namespace GrassControl
 				DistantGrass::Install();
 
 			if (Config::EnsureMaxGrassTypesPerTextureSetting > 0) {
-				const auto addr = RELOCATION_ID(18342, 18758).address() + REL::Relocate(0xD63 - 0xCF0, 0x68);
+				const auto addr = RELOCATION_ID(18342, 18758).address() + REL::Relocate(0xD63 - 0xCF0, 0x68, 0xD63 - 0xCF0);
 				const std::uint32_t max = std::max(Config::EnsureMaxGrassTypesPerTextureSetting, globals::settings::maxGrassTypesPerTexture ? globals::settings::maxGrassTypesPerTexture->GetInteger() : 0);
 
 				struct MaxGrassTypesPatch : CodeGenerator
@@ -237,7 +236,7 @@ namespace GrassControl
 						jmp(ptr[rip + retnLabel]);
 
 						L(retnLabel);
-						dq(a_target + REL::Relocate(0x7, 0x6));
+						dq(a_target + REL::Relocate(0x7, 0x6, 0x7));
 					}
 				};
 
@@ -245,7 +244,7 @@ namespace GrassControl
 				patch.ready();
 
 				auto& trampoline = SKSE::GetTrampoline();
-				REL::safe_fill(addr + 5, REL::NOP, REL::Relocate(2, 1));
+				REL::safe_fill(addr + 5, REL::NOP, REL::Relocate(2, 1, 2));
 				trampoline.write_branch<5>(addr, trampoline.allocate(patch));
 			}
 
@@ -258,7 +257,7 @@ namespace GrassControl
 			if (Config::OverwriteMinGrassSize >= 0)
 				OverrideSetting("iMinGrassSize:Grass", Config::OverwriteMinGrassSize);
 
-			// The engine divides the frame time by this value, so zero would produce NaN fade alphas.
+			// The engine divides frame time by this value
 			if (Config::OverwriteGrassFadeInTime >= 0.0)
 				OverrideSetting("fGrassFadeInTime:Grass", std::max(static_cast<float>(Config::OverwriteGrassFadeInTime), 0.0001f));
 		}
@@ -278,14 +277,14 @@ namespace GrassControl
 				RemoveCellGrass(CellFromExtraList(a_extraList));
 				RE::ClearGrassHandles(a_extraList);
 
-				// Returning null prevents the caller from removing grass a second time.
+				// Null prevents the caller from removing grass twice
 				return nullptr;
 			}
 
 			inline static REL::Relocation<decltype(thunk)> func;
 		};
 
-		// The caller only tests this geometry result for null.
+		// The caller only checks whether geometry is non-null
 		struct AllowMissingLandMesh
 		{
 			static std::uintptr_t thunk() { return 1; }
@@ -354,15 +353,15 @@ namespace GrassControl
 			OverrideSetting("iGrassCellRadius:Grass", GetGrassGridRadius());
 
 			stl::write_thunk_call<CellDestructor>(RELOCATION_ID(18446, 18877).address() + 0x6E);
-			REL::safe_write(RELOCATION_ID(13623, 13721).address() + REL::Relocate(0xC0F8 - 0xBF90, 0x1E8), REL::NOP5, 5);
+			REL::safe_write(RELOCATION_ID(13623, 13721).address() + REL::Relocate(0xC0F8 - 0xBF90, 0x1E8, 0xC0F8 - 0xBF90), REL::NOP5, 5);
 
 			stl::write_thunk_call<AllowMissingLandMesh>(RELOCATION_ID(15204, 15372).address() + 0x1C2);
-			stl::write_thunk_call<ClearUnloadTask>(RELOCATION_ID(18655, 19130).address() + REL::Relocate(0xC8, 0xCA));
+			stl::write_thunk_call<ClearUnloadTask>(RELOCATION_ID(18655, 19130).address() + REL::Relocate(0xC8, 0xCA, 0xC8));
 
 			{
 				const auto worker = RELOCATION_ID(18137, 18527).address();
-				// AE gates coordinate tasks to a separate branch before the cell call, so the hook replaces that gate.
-				const auto addr = worker + REL::Relocate(0x17, 0x1B);
+				// AE branches to coordinate tasks before the cell call, so replace that gate
+				const auto addr = worker + REL::Relocate(0x17, 0x1B, 0x17);
 
 				struct CellLoadDispatchPatch : CodeGenerator
 				{
@@ -390,7 +389,7 @@ namespace GrassControl
 						call(ptr[rip + loadCustomCell]);  // LoadDistantCellNow(worldSpace, x, y);
 						add(rsp, 0x20);
 
-						jmp(ptr[rip + completeTask]);  // Custom tasks have no cell pointer for the native load.
+						jmp(ptr[rip + completeTask]);  // Custom tasks have no cell pointer for the native loader
 
 						L(checkNormalLoad);
 						cmp(al, 0);
@@ -404,7 +403,7 @@ namespace GrassControl
 
 						L(resolveCell);
 						if (REL::Module::IsAE()) {
-							cmp(byte[rbx + a_rbxWorldSpaceOffset + 0x1C], 0);  // The replaced gate: task->isCell.
+							cmp(byte[rbx + a_rbxWorldSpaceOffset + 0x1C], 0);  // task->isCell
 							je(loadCoordinates);
 						} else {
 							mov(rcx, ptr[rbx + a_rbxWorldSpaceOffset - 0x8]);  // loadTask
@@ -416,7 +415,7 @@ namespace GrassControl
 							L(loadCoordinates);
 							jmp(ptr[rip + coordinateTarget]);
 							L(coordinateTarget);
-							dq(a_targetReturn + 0xB);  // Native coordinate branch skips the direct-load instructions.
+							dq(a_targetReturn + 0xB);  // Skip native direct-load instructions for coordinate tasks
 						}
 
 						L(loadCustomCell);
@@ -433,7 +432,7 @@ namespace GrassControl
 					}
 				};
 
-				CellLoadDispatchPatch patch(reinterpret_cast<std::uintptr_t>(LoadDistantCellNow), reinterpret_cast<std::uintptr_t>(ThrowOurMethodException), REL::Relocate(0x20, 0x20, 0x28), worker + REL::Relocate(0x1F, 0x21), worker + REL::Relocate(0x39, 0x16B));
+				CellLoadDispatchPatch patch(reinterpret_cast<std::uintptr_t>(LoadDistantCellNow), reinterpret_cast<std::uintptr_t>(ThrowOurMethodException), REL::Relocate(0x20, 0x20, 0x28), worker + REL::Relocate(0x1F, 0x21, 0x1F), worker + REL::Relocate(0x39, 0x16B, 0x39));
 				patch.ready();
 				if (REL::Module::IsAE()) {
 					trampoline.write_branch<6>(addr, trampoline.allocate(patch));
@@ -444,9 +443,7 @@ namespace GrassControl
 			}
 
 			{
-				auto addr = RELOCATION_ID(18150, 18541).address() + REL::Relocate(0xB094 - 0xAF20, 0x1CA, 0x177);
-				if (UpdatedRuntime())
-					addr = RELOCATION_ID(18150, 18541).address() + 0x1E4;
+				const auto addr = RELOCATION_ID(18150, 18541).address() + stl::relocate_runtime(0x174, 0x1CA, 0x177, 0x1E4);
 
 				struct CellLoadSelectionPatch : CodeGenerator
 				{
@@ -458,7 +455,7 @@ namespace GrassControl
 						if (REL::Module::IsAE())
 							movzx(eax, ptr[rsp + 0xA0]);  // originalFlag = byteAt(entrySP + 0xA0);
 						else
-							mov(esi, ptr[rsp + 0x30]);  // originalFlag is already in al; esi is live in the continuation.
+							mov(esi, ptr[rsp + 0x30]);  // originalFlag is already in al, preserve esi for the continuation
 
 						mov(ptr[rbx + rbx_offset + 0xd], al);  // task->originalFlag = originalFlag;
 
@@ -481,7 +478,7 @@ namespace GrassControl
 					}
 				};
 
-				CellLoadSelectionPatch patch(reinterpret_cast<std::uintptr_t>(CellLoadHook), addr + REL::Relocate(0x7, 0xB), REL::Relocate(0x30, 0x30, 0x38));
+				CellLoadSelectionPatch patch(reinterpret_cast<std::uintptr_t>(CellLoadHook), addr + REL::Relocate(0x7, 0xB, 0x7), REL::Relocate(0x30, 0x30, 0x38));
 				patch.ready();
 				if (!REL::Module::IsAE())
 					REL::safe_write(addr + 5, REL::NOP2, 2);
@@ -510,7 +507,7 @@ namespace GrassControl
 					}
 				};
 
-				CellLoadFlagsPatch patch(addr, REL::Relocate(0x3c, 0x3c, 0x44), Reg8(REL::Relocate(Reg::R15B, Reg::BPL)));
+				CellLoadFlagsPatch patch(addr, REL::Relocate(0x3c, 0x3c, 0x44), Reg8(REL::Relocate(Reg::R15B, Reg::BPL, Reg::R15B)));
 				patch.ready();
 				REL::safe_write(addr + 5, REL::NOP3, 3);
 				trampoline.write_branch<5>(addr, trampoline.allocate(patch));
@@ -530,12 +527,8 @@ namespace GrassControl
 			auto& trampoline = SKSE::GetTrampoline();
 
 			{
-				auto addr = RELOCATION_ID(13148, 13288).address() + REL::Relocate(0xA06 - 0x220, 0xA1D);
-				auto retnOffset = REL::Relocate(0x159, 0x17D);
-				if (UpdatedRuntime()) {
-					addr = RELOCATION_ID(13148, 13288).address() + 0x8B3;
-					retnOffset = 0x177;
-				}
+				const auto addr = RELOCATION_ID(13148, 13288).address() + stl::relocate_runtime(0x7E6, 0xA1D, 0x7E6, 0x8B3);
+				const auto retnOffset = stl::relocate_runtime(0x159, 0x17D, 0x159, 0x177);
 
 				struct UpdateGrassGridPatch : CodeGenerator
 				{
@@ -544,13 +537,13 @@ namespace GrassControl
 						Label funcLabel;
 						Label retnLabel;
 
-						push(rdx);  // Preserve the caller's live registers across the helper.
+						push(rdx);  // Preserve live registers across the helper
 						push(rcx);
 
 						mov(r9d, 0);    // addType = 0;
 						mov(r8d, a_Y);  // movedY = int32_t(a_Y);
 
-						if (REL::Module::IsAE() && !UpdatedRuntime())
+						if (REL::Module::IsAE() && !stl::is_ae_17())
 							mov(edx, ptr[rsp + 0x10 + 0x44]);  // movedX = int32At(entrySP + 0x44);
 						else
 							mov(edx, a_X);  // movedX = int32_t(a_X);
@@ -564,7 +557,7 @@ namespace GrassControl
 						pop(rcx);
 						pop(rdx);
 
-						jmp(ptr[rip + retnLabel]);  // The helper handles grid addition and removal.
+						jmp(ptr[rip + retnLabel]);
 
 						L(funcLabel);
 						dq(a_func);
@@ -575,14 +568,14 @@ namespace GrassControl
 				};
 
 				UpdateGrassGridPatch patch(reinterpret_cast<std::uintptr_t>(UpdateGrassGridNow), addr + retnOffset,
-					Reg32(UpdatedRuntime() ? Reg::EBP : REL::Relocate(Reg::R14D, Reg::EDI)),
-					Reg32(UpdatedRuntime() ? Reg::R15D : REL::Relocate(Reg::EBP, Reg::R14D)));
+					Reg32(stl::relocate_runtime(Reg::R14D, Reg::EDI, Reg::R14D, Reg::EBP)),
+					Reg32(stl::relocate_runtime(Reg::EBP, Reg::R14D, Reg::EBP, Reg::R15D)));
 				patch.ready();
 				trampoline.write_branch<6>(addr, trampoline.allocate(patch));
 			}
 
 			{
-				const auto addr = RELOCATION_ID(15214, 15383).address() + REL::Relocate(0x78B7 - 0x7830, 0x7E);
+				const auto addr = RELOCATION_ID(15214, 15383).address() + REL::Relocate(0x78B7 - 0x7830, 0x7E, 0x78B7 - 0x7830);
 
 				struct PackGrassCoordinatesPatch : CodeGenerator
 				{
@@ -598,7 +591,7 @@ namespace GrassControl
 
 						cdq();
 						mov(ecx, 12);
-						idiv(ecx);  // gridX = x / 12; signed division truncates toward zero.
+						idiv(ecx);  // gridX = x / 12;
 
 						mov(ecx, a_X);          // ecx = savedEcx;
 						mov(a_X.cvt32(), eax);  // a_X = gridX;
@@ -623,19 +616,19 @@ namespace GrassControl
 					}
 				};
 
-				PackGrassCoordinatesPatch patch(addr, Reg32(REL::Relocate(Reg::R15, Reg::R14)), REL::Relocate(0x48, 0x50), REL::Relocate(0x258, 0x288));
+				PackGrassCoordinatesPatch patch(addr, Reg32(REL::Relocate(Reg::R15, Reg::R14, Reg::R15)), REL::Relocate(0x48, 0x50, 0x48), REL::Relocate(0x258, 0x288, 0x258));
 				patch.ready();
 				REL::safe_fill(addr, REL::NOP, 0xB);
 				trampoline.write_branch<5>(addr, trampoline.allocate(patch));
 			}
 
-			// Bypass the grass-distance clamp derived from uGridsToLoad.
-			REL::safe_write(RELOCATION_ID(15202, 15370).address() + REL::Relocate(0xB06 - 0x890, 0x279) + 2, std::uint8_t{ 16 });
-			REL::safe_write(RELOCATION_ID(528751, 15379).address() + REL::Relocate(0xFE - 0xE0, 0x1E) + 2, std::uint8_t{ 16 });
+			// Bypass the uGridsToLoad grass-distance clamp
+			REL::safe_write(RELOCATION_ID(15202, 15370).address() + REL::Relocate(0xB06 - 0x890, 0x279, 0xB06 - 0x890) + 2, std::uint8_t{ 16 });
+			REL::safe_write(RELOCATION_ID(528751, 15379).address() + REL::Relocate(0xFE - 0xE0, 0x1E, 0xFE - 0xE0) + 2, std::uint8_t{ 16 });
 
 			stl::write_thunk_call<CellSelection>(RELOCATION_ID(15206, 15374).address() + (0x645C - 0x6200));
-			stl::write_thunk_call<CellSelection>(RELOCATION_ID(15205, 15373).address() + (UpdatedRuntime() ? 0x590 : REL::Relocate(0x62B, 0x597)));
-			stl::write_thunk_call<CellSelection>(RELOCATION_ID(15204, 15372).address() + (UpdatedRuntime() ? 0x305 : 0x2F5));
+			stl::write_thunk_call<CellSelection>(RELOCATION_ID(15205, 15373).address() + stl::relocate_runtime(0x62B, 0x597, 0x62B, 0x590));
+			stl::write_thunk_call<CellSelection>(RELOCATION_ID(15204, 15372).address() + stl::relocate_runtime(0x2F5, 0x2F5, 0x2F5, 0x305));
 
 			stl::write_thunk_jump<UpdateGrassGridEnable>(RELOCATION_ID(13190, 13335).address());
 			stl::write_thunk_jump<UpdateGrassGridDisable>(RELOCATION_ID(13191, 13336).address());
@@ -671,11 +664,6 @@ namespace GrassControl
 		inline static REL::Relocation<decltype(thunk)> func;
 	};
 
-	void GidFileCache::SetHelperInstalled(bool installed)
-	{
-		cacheHelperInstalled = installed;
-	}
-
 	void GidFileCache::FixFileFormat()
 	{
 		if (Config::GeneratingCache) {
@@ -695,7 +683,7 @@ namespace GrassControl
 			GidFileCache::EnableFileGeneration();
 		}
 
-		const auto addr = RELOCATION_ID(15204, 15372).address() + (UpdatedRuntime() ? 0x8A6 : 0x896);
+		const auto addr = RELOCATION_ID(15204, 15372).address() + stl::relocate_runtime(0x896, 0x896, 0x896, 0x8A6);
 
 		struct SkipConsoleGrassPatch : CodeGenerator
 		{
@@ -705,7 +693,7 @@ namespace GrassControl
 
 				mov(r15, 0);
 
-				jmp(ptr[rip + retnLabel]);  // Skip GrassConsole serialization; the PC cache stream is already closed.
+				jmp(ptr[rip + retnLabel]);  // Skip console serialization because the PC cache stream is already closed
 
 				L(retnLabel);
 				dq(a_target + 0x7 + 0x2D5);
@@ -733,10 +721,10 @@ namespace GrassControl
 		{
 			static int thunk(char* buffer, std::size_t capacity, const char*, const char* world, int x, int y)
 			{
-				// Cells cached this session load from their file once they are distant.
+				// Use newly cached files when cells become distant
 				DistantGrass::gridState.cacheIndex.Insert(world, x, y);
 
-				// Deletion and creation must use the same name to prevent appending to an old cache.
+				// Delete and create with the same name to avoid appending to an old cache
 				return func(buffer, capacity, "Grass\\%sx%04dy%04d.cgid", world, x, y);
 			}
 
@@ -747,7 +735,7 @@ namespace GrassControl
 		{
 			static int thunk(char* buffer, std::size_t capacity, const char*, const char* world, int x, int y)
 			{
-				// Avoid loading vanilla .gid files from archives.
+				// Exclude vanilla .gid files in archives
 				return func(buffer, capacity, "Grass\\%sx%04dy%04d.cgid", world, x, y);
 			}
 
@@ -775,15 +763,15 @@ namespace GrassControl
 			if (!GidFileCache::cacheHelperInstalled)
 				stl::write_thunk_call<PathFileNameLoad>(RELOCATION_ID(15206, 15374).address() + 0xD4);
 
-			stl::write_thunk_call<PathFileNameSave>(RELOCATION_ID(15204, 15372).address() + (UpdatedRuntime() ? 0x666 : REL::Relocate(0x65A, 0x656)));
+			stl::write_thunk_call<PathFileNameSave>(RELOCATION_ID(15204, 15372).address() + stl::relocate_runtime(0x65A, 0x656, 0x65A, 0x666));
 
 			if (Config::GeneratingCache)
-				stl::write_thunk_call<GrassCountIncrement>(RELOCATION_ID(13190, 13335).address() + REL::Relocate(0xD40 - 0xC70, 0xD0));
+				stl::write_thunk_call<GrassCountIncrement>(RELOCATION_ID(13190, 13335).address() + REL::Relocate(0xD40 - 0xC70, 0xD0, 0xD40 - 0xC70));
 		}
 
 		void ApplyPatches()
 		{
-			const auto createOffset = UpdatedRuntime() ? 0x9D9 : REL::Relocate(0x2B25 - 0x2220, 0xB29);
+			const auto createOffset = stl::relocate_runtime(0x905, 0xB29, 0x905, 0x9D9);
 			REL::safe_write(RELOCATION_ID(13148, 13288).address() + createOffset, REL::NOP5, 5);
 
 			const auto addr = RELOCATION_ID(13190, 13335).address() + 0x106;
@@ -817,13 +805,13 @@ namespace GrassControl
 			auto& trampoline = SKSE::GetTrampoline();
 			trampoline.write_branch<5>(addr, trampoline.allocate(patch));
 
-			stl::write_thunk_call<Generation::GrassGridRadius, 6>(RELOCATION_ID(15202, 15370).address() + REL::Relocate(0x17E, 0x17D));
+			stl::write_thunk_call<Generation::GrassGridRadius, 6>(RELOCATION_ID(15202, 15370).address() + REL::Relocate(0x17E, 0x17D, 0x17E));
 
 			GidFileCache::EnableFileGeneration();
 
 			Generation::Enable();
 
-			// Cache generation must continue while the game is unfocused.
+			// Keep cache generation running when unfocused
 			REL::safe_write(RELOCATION_ID(35565, 36564).address() + REL::Relocate(0x216 - 0x1E0, 0x51, 0x4b), REL::JMP8);
 		}
 	}

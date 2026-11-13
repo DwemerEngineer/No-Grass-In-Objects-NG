@@ -34,7 +34,7 @@ namespace GrassControl
 		       std::isfinite(lengthSquared) && lengthSquared > 0.000001 && lengthSquared < 4.0;
 	}
 
-	// Count pending writers before polling so new grass readers yield to them.
+	// Count waiting writers before polling so new grass readers yield
 	void PhysicsRaycast::WorldReadGate::EnterWriteLock(RE::BSReadWriteLock* lock)
 	{
 		auto* writerThread = reinterpret_cast<volatile long*>(lock);
@@ -70,7 +70,7 @@ namespace GrassControl
 
 	void PhysicsRaycast::WorldReadGate::Enter(RE::bhkWorld* world)
 	{
-		// Reentrant queries must not wait for a writer blocked by this thread's read lock.
+		// Reentrant queries must not wait on a writer blocked by this thread's read lock
 		if (depth++)
 			return;
 
@@ -87,7 +87,6 @@ namespace GrassControl
 				return;
 			}
 
-			// Release the read lock if a writer arrived during acquisition.
 			world->worldLock.UnlockForRead();
 		}
 	}
@@ -119,7 +118,7 @@ namespace GrassControl
 			const float scaledRadius = radius * HavokScale;
 			capsule->radius = scaledRadius;
 
-			// Havok caches the radius in both endpoint W components.
+			// Havok stores the radius in both endpoint W components
 			capsule->vertexA = RE::hkVector4(0.0f, 0.0f, 0.0f, scaledRadius);
 			capsule->vertexB = RE::hkVector4(0.0f, 0.0f, height * HavokScale, scaledRadius);
 		} else {
@@ -128,7 +127,7 @@ namespace GrassControl
 			const float halfExtentY = halfWidthY * HavokScale;
 			const float halfExtentZ = std::abs(height) * HavokScale / 2.0f;
 
-			// Havok caches the smallest half extent in W.
+			// Havok stores the smallest half extent in W
 			box->halfExtents = RE::hkVector4(halfExtentX, halfExtentY, halfExtentZ, std::min({ halfExtentX, halfExtentY, halfExtentZ }));
 		}
 	}
@@ -141,26 +140,12 @@ namespace GrassControl
 		       ValidDimension(glm::length(glm::vec3(difference)));
 	}
 
-	void PhysicsRaycast::WorldReadGate::InstallWriterSignal()
-	{
-		if (installed)
-			return;
-
-		SKSE::GetTrampoline().write_branch<5>(RELOCATION_ID(66977, 68234).address(), PhysicsRaycast::EnterWriteLock);
-		installed = true;
-	}
-
-	void PhysicsRaycast::InstallWriterSignal()
-	{
-		GetSingleton().worldReadGate.InstallWriterSignal();
-	}
-
 	void PhysicsRaycast::EnterWriteLock(RE::BSReadWriteLock* lock)
 	{
 		GetSingleton().worldReadGate.EnterWriteLock(lock);
 	}
 
-	// The deleting destructor returns this storage to the current Havok heap.
+	// The deleting destructor frees this through the current Havok heap
 	RE::hkpSimpleShapePhantom* PhysicsRaycast::AllocatePhantom()
 	{
 		auto* router = RE::hkMemoryRouter::GetInstancePtr();
@@ -192,7 +177,7 @@ namespace GrassControl
 
 		const auto* collidable = static_cast<const RE::hkpCollidable*>(root);
 
-		// The remaining bits encode part/flags/system group, not a layer.
+		// Only the low seven bits encode the collision layer
 		const auto layer = collidable->broadPhaseHandle.collisionFilterInfo.filter & 0x7F;
 		if (layer >= 64 || !(settings.RaycastMask & (1ULL << layer)))
 			return false;
@@ -207,7 +192,7 @@ namespace GrassControl
 			return false;
 
 		hit.hitCliff = settings.IsCliff(hit.formID);
-		// Shape-filtered cliffs are only partly cliff, so the caller decides once it knows which shape was hit.
+		// Defer shape-filtered cliffs until the caller resolves the hit shape
 		const bool shapeRule = hit.hitCliff && settings.HasCliffShapeRule(hit.formID);
 		if (ignoreCliff && hit.hitCliff && !shapeRule)
 			return false;
@@ -229,11 +214,11 @@ namespace GrassControl
 		if (queriesDisabled)
 			return { QueryStatus::Unavailable, {}, "loading disabled queries" };
 
-		// Attachment can precede the reference tasks that add collision to Havok.
+		// Attachment can precede the reference tasks that add Havok collision
 		if (!CellHasCollision(cell) || cell.IsInteriorCell())
 			return { QueryStatus::Unavailable, {}, "cell references are not loaded" };
 
-		// queryMutex keeps loading from replacing the borrowed world wrapper.
+		// Hold queryMutex while borrowing the world wrapper
 		RE::NiPointer<RE::bhkWorld> owner(cell.GetbhkWorld());
 		if (!owner)
 			return { QueryStatus::Unavailable, {}, "no Havok world wrapper" };
@@ -303,7 +288,7 @@ namespace GrassControl
 		input.from = RE::hkVector4(havokStart.x, havokStart.y, havokStart.z, 1);
 		input.to = RE::hkVector4(havokEnd.x, havokEnd.y, havokEnd.z, 1);
 
-		// Use the collector overload so ignored hits cannot hide other blockers.
+		// Collect all hits so ignored objects do not hide other blockers
 		RE::CastRay(world.get(), input, collector);
 		if (collector.invalid)
 			return { QueryStatus::Failed, {} };
@@ -389,7 +374,7 @@ namespace GrassControl
 			try {
 				hits.push_back(std::move(hit));
 			} catch (const std::bad_alloc&) {
-				// Never unwind a plugin allocation failure through Havok callbacks.
+				// Do not unwind allocation failures through Havok callbacks
 				invalid = true;
 				earlyOutHitFraction = 0.0f;
 			}
@@ -415,7 +400,7 @@ namespace GrassControl
 			return;
 		}
 
-		// Compound agents can pass child bodies instead of the original collidables.
+		// Compound agents may pass child bodies instead of root collidables
 		if (rootA != queryBody && rootB != queryBody) {
 			invalid = true;
 			return;
@@ -557,7 +542,7 @@ namespace GrassControl
 		if (queriesDisabled || !CellHasCollision(cell))
 			return false;
 
-		// Wait for neighboring cells whose collision can extend into this cell, without waiting for the entire loaded grid.
+		// Neighboring cells can have collision extending into this cell
 		const auto* tes = RE::TES::GetSingleton();
 		const auto* grid = tes ? tes->gridCells : nullptr;
 		const auto* coordinates = const_cast<RE::TESObjectCELL&>(cell).GetCoordinates();
@@ -567,7 +552,7 @@ namespace GrassControl
 		for (std::uint32_t x = 0; x < grid->length; ++x) {
 			for (std::uint32_t y = 0; y < grid->length; ++y) {
 				auto* neighbor = grid->GetCell(x, y);
-				// Slots past a worldspace's edge hold no cell and have no collision to wait for.
+				// Empty slots beyond the worldspace edge have no collision to wait for
 				const auto* at = neighbor ? neighbor->GetCoordinates() : nullptr;
 				if (!at)
 					continue;
@@ -576,7 +561,7 @@ namespace GrassControl
 			}
 		}
 
-		// Loaded references can still have bodies queued for addition to the Havok world.
+		// Loaded references may still have Havok bodies queued for addition
 		RE::NiPointer<RE::bhkWorld> owner(cell.GetbhkWorld());
 		if (!owner)
 			return false;
@@ -607,7 +592,7 @@ namespace GrassControl
 		if (!tes || !manager || manager->generateGrassDataFiles)
 			return;
 
-		// Collision arrives over several frames, so polling faster only repeats the same failed checks.
+		// Collision loads over several frames, so space out retries
 		const auto now = std::chrono::steady_clock::now();
 		if (now - lastRetry < std::chrono::milliseconds(100))
 			return;
@@ -646,6 +631,7 @@ namespace GrassControl
 
 	void PhysicsRaycast::ThreadMemory::Send(std::uint32_t type) const
 	{
+		// Use the same thread key for Havok start and exit events
 		ThreadEvent event{ this, type };
 		RE::SendHavokThreadEvent(&event);
 	}
@@ -655,7 +641,7 @@ namespace GrassControl
 		if (!started)
 			return;
 
-		// This thread's query phantom is freed through its router, so it must go before the router does.
+		// Free the query phantom before destroying its Havok router
 		resources.Reset();
 		Send(1);
 	}
@@ -665,8 +651,7 @@ namespace GrassControl
 		if (const auto* router = RE::hkMemoryRouter::GetInstancePtr())
 			return router->Heap != nullptr;
 
-		// Pair Havok thread start and exit events with the same opaque thread key.
-		// Construct query storage first so ThreadMemory can reset it before either thread-local object is destroyed.
+		// Construct query storage before ThreadMemory so it outlives the cleanup
 		resources.Reset();
 		auto& memory = GetThreadMemory();
 		if (!memory.started) {
@@ -741,7 +726,7 @@ namespace GrassControl
 					captured = Util::CaptureShapes(root.get());
 			}
 
-			// A failed capture is cached too, so a missing or oversized model is not walked again for every candidate.
+			// Cache failed captures to avoid repeating scene walks for each candidate
 			snapshot = captured ? std::make_shared<const Util::ShapeSnapshot>(std::move(*captured)) : std::make_shared<const Util::ShapeSnapshot>();
 			std::scoped_lock cacheLock(shapeCache.mutex);
 			shapeCache.snapshots.try_emplace(handle.native_handle(), snapshot);

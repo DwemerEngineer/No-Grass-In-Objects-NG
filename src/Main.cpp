@@ -75,11 +75,11 @@ namespace GrassControl::Plugin
 					InitializeRaycastSettings();
 					Events::Register();
 					if (Config::UseGrassCache && !Config::loadFromBSA && !Config::GeneratingCache && DistantGrass::gridState.cacheIndex.Empty()) {
-						const auto* message = Config::OnlyLoadFromCache ?
-					                              "Grass cache files are missing. You will see no grass unless you generate a cache by creating a new text file named PrecacheGrass next to SkyrimSE.exe or SkyrimVR.exe, or download a pre-generated cache from the Nexus." :
-					                              "Grass cache files are missing, so all grass is placed while you play. To use a cache, create a file named PrecacheGrass next to the game executable to generate one, or install a pre-generated cache from the Nexus.";
-						logger::info("{}", message);
-						RE::DebugMessageBox(message);
+						const auto* cacheWarning = Config::OnlyLoadFromCache ?
+					                                   "Grass cache files are missing. You will see no grass unless you generate a cache by creating a new text file named PrecacheGrass next to SkyrimSE.exe or SkyrimVR.exe, or download a pre-generated cache from the Nexus." :
+					                                   "Grass cache files are missing, so all grass is placed while you play. To use a cache, create a file named PrecacheGrass next to the game executable to generate one, or install a pre-generated cache from the Nexus.";
+						logger::info("{}", cacheWarning);
+						RE::DebugMessageBox(cacheWarning);
 					}
 
 					break;
@@ -125,7 +125,7 @@ namespace GrassControl::Plugin
 		Generation::Update();
 		DistantGrass::Update();
 
-		// Generation starts on the second frame after the main menu opens.
+		// Start generation two frames after the main menu opens
 		if ((mainMenuUpdates == 1 || mainMenuUpdates == 2) && ++mainMenuUpdates == 3)
 			Generation::Start();
 	}
@@ -187,7 +187,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 	logger::info("Game version : {}", a_skse->RuntimeVersion().string());
 
 	if (LoadLibraryW(GrassControl::Util::Files::GamePath(L"Data/SKSE/Plugins/GrassCacheHelperNG.dll").c_str())) {
-		GrassControl::GidFileCache::SetHelperInstalled(true);
+		GrassControl::GidFileCache::cacheHelperInstalled = true;
 		logger::info("Grass Cache Helper NG detected.");
 	}
 
