@@ -21,7 +21,10 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iterator>
+#include <limits>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -31,6 +34,7 @@
 #include <ranges>
 #include <set>
 #include <shared_mutex>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>

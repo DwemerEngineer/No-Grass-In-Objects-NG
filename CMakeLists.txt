@@ -37,6 +37,8 @@ set(sources
   src/Main.cpp
   src/AddCellGrassTask.cpp
   src/CliffSurfaces.cpp
+  src/CollisionGrid.cpp
+  src/CollisionSources.cpp
   src/Config.cpp
   src/ObjectHandler.cpp
   src/Events.cpp
