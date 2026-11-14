@@ -78,6 +78,7 @@ namespace GrassControl::Plugin
 
 				case MessagingInterface::kDataLoaded:
 					InitializeRaycastSettings();
+					mainMenuUpdates = 0;
 					CollisionGrid::Start();
 					Events::Register();
 					if (Config::UseGrassCache && !Config::loadFromBSA && !Config::GeneratingCache && DistantGrass::gridState.cacheIndex.Empty()) {
@@ -127,6 +128,13 @@ namespace GrassControl::Plugin
 
 	void Update()
 	{
+		// Menu mods can bypass the main-menu opening event
+		if (Config::GeneratingCache && mainMenuUpdates == 0) {
+			auto* ui = RE::UI::GetSingleton();
+			if (ui && ui->IsMenuOpen(RE::MainMenu::MENU_NAME))
+				OnMainMenuOpen();
+		}
+
 		PhysicsRaycast::GetSingleton().Update();
 		Generation::Update();
 		DistantGrass::Update();

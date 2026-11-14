@@ -7,7 +7,7 @@ namespace GrassControl
 	namespace Plugin
 	{
 		inline std::atomic<std::shared_ptr<const RaycastHelper>> raycastSettings;
-		inline int mainMenuUpdates = 0;
+		inline int mainMenuUpdates = -1;
 
 		void Initialize();
 
