@@ -187,9 +187,7 @@ namespace GrassControl::Util
 					}
 				}
 
-				if (!error) {
-					entry.increment(error);
-				}
+				entry.increment(error);
 			}
 
 			if (error) {

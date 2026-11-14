@@ -41,7 +41,7 @@ namespace RE
 		func(land, coordData, height, interpolatedNormal, normal, color);
 	}
 
-	// TES::GetLandTexture without the loaded-cell lookup; null outside the land's loaded data.
+	// Bypass TES::GetLandTexture's loaded-cell lookup for distant terrain
 	inline TESLandTexture* GetLandTexture(TESObjectLAND* land, const NiPoint3* position)
 	{
 		static REL::Relocation<TESLandTexture* (*)(TESObjectLAND*, const NiPoint3*)> func{ RELOCATION_ID(18310, 18714) };

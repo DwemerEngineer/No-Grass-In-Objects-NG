@@ -1,5 +1,4 @@
 #include "GrassControl/RaycastHelper.h"
-#include "GrassControl/PhysicsRaycast.h"
 #include "GrassControl/Engine.h"
 
 namespace GrassControl
@@ -25,7 +24,7 @@ namespace GrassControl
 			return true;
 
 		const auto* cell = land ? land->GetSaveParentCell() : nullptr;
-		if (!cell || cell->IsInteriorCell() || !cell->IsAttached())
+		if (!cell || cell->IsInteriorCell())
 			return true;
 
 		return param && Grasses && Grasses->Contains(param->grassFormID);
@@ -40,11 +39,13 @@ namespace GrassControl
 		const auto width = static_cast<float>(TextureWidth);
 		const std::array points = { RE::NiPoint3{ x, y, z }, RE::NiPoint3{ x + width, y, z }, RE::NiPoint3{ x - width, y, z }, RE::NiPoint3{ x, y + width, z }, RE::NiPoint3{ x, y - width, z } };
 		const std::size_t count = width > 0 ? points.size() : 1;
+
 		for (std::size_t i = 0; i < count; ++i) {
-			// Cells outside the loaded grid only have their own land to read.
+			// Distant cells fall back to their own terrain
 			auto* texture = tes->GetLandTexture(points[i]);
 			if (!texture && land && land->loadedData)
 				texture = RE::GetLandTexture(land, &points[i]);
+
 			if (texture && Textures->Contains(texture->GetFormID()))
 				return true;
 		}
@@ -63,16 +64,16 @@ namespace GrassControl
 		return rule != cliffObjects.end() && (!rule->second.allowedShapes.empty() || !rule->second.blockedShapes.empty());
 	}
 
-	bool RaycastHelper::IsCliffAt(RE::FormID formID, RE::ObjectRefHandle reference, const RE::NiPoint3& point) const
+	bool RaycastHelper::IsCliffAt(const PhysicsRaycast::HitResult& hit, const RE::NiPoint3& point) const
 	{
-		if (!IsCliff(formID))
+		if (!hit.hitCliff)
 			return false;
 
-		const auto rule = cliffObjects.find(formID);
+		const auto rule = cliffObjects.find(hit.formID);
 		if (rule == cliffObjects.end() || (rule->second.allowedShapes.empty() && rule->second.blockedShapes.empty()))
 			return true;
 
-		const auto names = PhysicsRaycast::GetSingleton().GetShapeNames(reference, point);
+		const auto names = PhysicsRaycast::GetSingleton().GetShapeNames(hit, point);
 		return names && Util::IsShapeAllowed(names->shape, names->root, rule->second.allowedShapes, rule->second.blockedShapes);
 	}
 
@@ -92,11 +93,11 @@ namespace GrassControl
 		for (const auto& hit : result.hits) {
 			const auto at = Mode >= 1 ? glm::vec4(x, y, z, 0) : begin + (end - begin) * hit.hitFraction;
 			const RE::NiPoint3 point{ at.x, at.y, at.z };
-			if (ignoreCliffs && hit.hitCliff && IsCliffAt(hit.formID, hit.reference, point))
+			if (ignoreCliffs && IsCliffAt(hit, point))
 				continue;
 
 			if (const auto rule = partIgnoredObjects.find(hit.formID); rule != partIgnoredObjects.end()) {
-				const auto names = physics.GetShapeNames(hit.reference, point);
+				const auto names = physics.GetShapeNames(hit, point);
 				if (names && Util::MatchesShape(names->shape, names->root, rule->second.ignoredShapes))
 					continue;
 			}

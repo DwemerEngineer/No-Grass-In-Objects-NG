@@ -26,7 +26,7 @@ namespace GrassControl::CliffSurfaces
 		if (!property || property->flags.none(kZBufferWrite) || property->flags.any(kSkinned, kDecal, kDynamicDecal, kTreeAnim, kRefraction, kTempRefraction))
 			return nullptr;
 
-		// Alpha-tested cliff edges can also use alpha blending.
+		// Alpha-tested cliff edges can also use alpha blending
 		const auto* alpha = runtime.alphaProperty.get();
 		return alpha && alpha->GetAlphaBlending() && !alpha->GetAlphaTesting() ? nullptr : property;
 	}
@@ -57,7 +57,7 @@ namespace GrassControl::CliffSurfaces
 	{
 		const auto* retainedID = texture->GetFormEditorID();
 		std::string editorID = retainedID ? retainedID : "";
-		// LTEX does not normally retain its editor ID, so read EDID through the game's plugin reader.
+		// LTEX does not retain its editor ID, so read EDID from the plugin
 		if (editorID.empty()) {
 			for (auto* source : { texture->GetFile(), texture->GetFile(0) }) {
 				if (!source)
@@ -104,12 +104,11 @@ namespace GrassControl::CliffSurfaces
 				loadOrder.emplace(file, loadOrder.size() + 1);
 
 			const auto priority = [&](RE::TESLandTexture* texture) {
-				// GetFile() identifies the winning override
 				const auto it = loadOrder.find(texture->GetFile());
 				const auto [variant, inserted] = noGrassVariants.try_emplace(texture);
 				if (inserted)
 					variant->second = IsNoGrassVariant(texture);
-				// A NoGrass variant only loses to another texture with grass; mods can give it grass and add their own bare copy.
+				// Overrides can add grass to a NoGrass variant
 				return std::tuple{ !texture->textureGrassList.empty(), !variant->second, it != loadOrder.end() ? it->second : 0 };
 			};
 			const auto add = [&](auto& entries, std::string key, RE::TESLandTexture* texture) {
@@ -136,7 +135,6 @@ namespace GrassControl::CliffSurfaces
 		return index;
 	}
 
-	// Cache only after all eligible cliffs have loaded 3D
 	std::vector<Surface> Get(RE::TESObjectCELL* cell);
 
 	void Forget(RE::FormID cell);

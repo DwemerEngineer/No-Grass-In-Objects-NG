@@ -2,6 +2,7 @@
 
 #include "GrassControl/AddCellGrassTask.h"
 #include "GrassControl/CliffSurfaces.h"
+#include "GrassControl/CollisionGrid.h"
 #include "GrassControl/Config.h"
 #include "GrassControl/Engine.h"
 #include "GrassControl/Globals.h"
@@ -324,6 +325,11 @@ namespace GrassControl::DistantGrass
 			return GrassState::Active;
 
 		return canLoadFromFile && !Config::GrassCliffs && gridState.cacheIndex.Contains(world, c.x, c.y) ? GrassState::Active : GrassState::Lod;
+	}
+
+	GrassState BuildState(GrassState wanted, RE::TESObjectCELL& cell)
+	{
+		return wanted == GrassState::Lod && CollisionGrid::Find(cell) ? GrassState::Active : wanted;
 	}
 
 	void RemoveCellGrass(RE::TESObjectCELL* cell)
@@ -768,6 +774,10 @@ namespace GrassControl::DistantGrass
 
 	bool QueueGrassPlacement(RE::TESObjectCELL* cell)
 	{
+		auto* manager = RE::BGSGrassManager::GetSingleton();
+		if (!cell || !manager)
+			return false;
+
 		if (Config::ExtendGrassDistance) {
 			std::unique_lock lock(gridState.cellMapMutex, std::try_to_lock);
 			if (!lock)
@@ -787,14 +797,19 @@ namespace GrassControl::DistantGrass
 
 			const bool canLoadGrass = globals::AllowLoadGrass();
 			const auto wanted = GetWantState(*info, tes->currentGridX, tes->currentGridY, globals::GridsToLoad(), GetGrassGridRadius(), canLoadGrass, world->editorID.c_str());
-			if (wanted == GrassState::None || info->have == wanted || info->have == GrassState::Active)
+			const auto build = BuildState(wanted, *cell);
+			if (wanted == GrassState::None || info->have == build || info->have == GrassState::Active)
 				return true;
 
 			const bool fromCache = canLoadGrass && gridState.cacheIndex.Contains(*cell);
-			if (wanted == GrassState::Active && !fromCache && !PhysicsRaycast::GetSingleton().CanFilterCell(*cell))
+			if (build == GrassState::Active && !GrassPatchCreation::CanPrepareCell(manager, *cell, fromCache))
 				return false;
 
 			PrepareGrassTask(info, cell, wanted);
+		} else {
+			const bool fromCache = globals::AllowLoadGrass() && gridState.cacheIndex.Contains(*cell);
+			if (!GrassPatchCreation::CanPrepareCell(manager, *cell, fromCache))
+				return false;
 		}
 
 		QueueGrassCreation(cell);
@@ -809,6 +824,20 @@ namespace GrassControl::DistantGrass
 			gridState.cellGrid->QueueDistantCells(nullptr, 0, 0, 0, 0);
 
 		GetCreationState().modelPrefetch.Reset();
+	}
+
+	static void RetryPreloadedCells()
+	{
+		std::unique_lock lock(gridState.cellMapMutex, std::try_to_lock);
+		if (!lock)
+			return;
+
+		// Keep notifications queued until the cell map is available
+		for (const auto& [x, y] : CollisionGrid::Update()) {
+			const auto info = gridState.cellGrid->GetFromGrid(x, y);
+			if (info && info->cell && info->have != GrassState::Active)
+				PhysicsRaycast::GetSingleton().DeferCell(info->cell);
+		}
 	}
 
 	void Update()
@@ -829,6 +858,8 @@ namespace GrassControl::DistantGrass
 			return;
 
 		RetireReplacedGrass();
+
+		RetryPreloadedCells();
 
 		if (gridState.gridUpdatePending.exchange(false))
 			UpdateGrassGridNow(tes, 0, 0, 0);

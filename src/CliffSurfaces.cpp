@@ -1,12 +1,12 @@
 #include "GrassControl/CliffSurfaces.h"
 
+#include "GrassControl/CollisionGrid.h"
 #include "GrassControl/Main.h"
 #include "GrassControl/RaycastHelper.h"
 #include "GrassControl/Util.h"
 
 namespace GrassControl::CliffSurfaces
 {
-	// Prefer exact paths with grass, then filename matches
 	static RE::TESLandTexture* LandTextureFor(std::string_view texturePath)
 	{
 		if (auto* texture = GetTextureIndex().Find(texturePath))
@@ -16,6 +16,7 @@ namespace GrassControl::CliffSurfaces
 		std::scoped_lock lock(unmatchedMutex);
 		if (unmatched.insert(path).second)
 			logger::info("Cliff texture {} matches no landscape texture", path);
+
 		return nullptr;
 	}
 
@@ -52,29 +53,34 @@ namespace GrassControl::CliffSurfaces
 
 	static std::vector<Surface> CollectCell(RE::TESObjectCELL* cell, bool& complete)
 	{
-		std::vector<Surface> surfaces;
 		complete = true;
+		std::vector<Surface> surfaces;
 		const auto settings = Plugin::GetRaycastSettings();
 		const auto* coordinates = cell->GetCoordinates();
+
 		if (!settings || !coordinates || cell->IsInteriorCell())
 			return surfaces;
 
 		std::vector<RE::NiPointer<RE::TESObjectREFR>> references;
 		const auto retain = [&](RE::TESObjectREFR* reference) {
 			const auto* base = reference->GetBaseObject();
+
 			if (base && settings->IsCliff(base->GetFormID()) && !reference->IsDisabled())
 				references.emplace_back(reference);
+
 			return RE::BSContainer::ForEachResult::kContinue;
 		};
+
 		cell->ForEachReference(retain);
 
-		// Persistent references belong to the worldspace's persistent cell and must be found by position
 		const auto* world = cell->GetRuntimeData().worldSpace;
 		if (const auto* persistent = world ? world->persistentCell : nullptr) {
+
 			persistent->ForEachReference([&](RE::TESObjectREFR* reference) {
 				const auto position = reference->GetPosition();
 				if (std::floor(position.x / 4096.0f) != static_cast<float>(coordinates->cellX) || std::floor(position.y / 4096.0f) != static_cast<float>(coordinates->cellY))
 					return RE::BSContainer::ForEachResult::kContinue;
+
 				return retain(reference);
 			});
 		}
@@ -99,9 +105,11 @@ namespace GrassControl::CliffSurfaces
 				const auto* base = reference->GetBaseObject();
 				if (!base)
 					continue;
+
 				const auto formID = base->GetFormID();
 				const auto rule = settings->cliffObjects.find(formID);
 				std::uint32_t budget = MaxNodesPerCliff;
+
 				CollectShapes(root.get(), root->name.c_str(), formID, rule != settings->cliffObjects.end() ? &rule->second : nullptr, surfaces, budget);
 			}
 		}
@@ -109,6 +117,56 @@ namespace GrassControl::CliffSurfaces
 		complete = without3D == 0;
 		if (!references.empty())
 			logger::debug("Cliff surfaces in cell ({}, {}): {} cliffs ({} without 3D), {} shapes", coordinates->cellX, coordinates->cellY, references.size(), without3D, surfaces.size());
+
+		return surfaces;
+	}
+
+	static std::vector<Surface> CollectPreloaded(RE::TESObjectCELL* cell, bool& complete)
+	{
+		std::vector<Surface> surfaces;
+		const auto geometry = CollisionGrid::Find(*cell);
+		const auto settings = Plugin::GetRaycastSettings();
+		complete = geometry != nullptr;
+
+		if (!geometry || !settings)
+			return surfaces;
+
+		std::uint32_t cliffs = 0;
+		for (const auto& object : geometry->Objects()) {
+			if (!settings->IsCliff(object.base))
+				continue;
+
+			++cliffs;
+
+			const auto rule = settings->cliffObjects.find(object.base);
+			const auto& root = object.model->rootName;
+			const auto* base = RE::TESForm::LookupByID<RE::TESBoundObject>(object.base);
+			const auto* swap = base ? base->As<RE::TESModelTextureSwap>() : nullptr;
+
+			for (const auto& surface : object.model->Surfaces()) {
+				if (rule != settings->cliffObjects.end() && !Util::IsShapeAllowed(surface.shape, root, rule->second.allowedShapes, rule->second.blockedShapes))
+					continue;
+
+				// Alternate textures override the model's diffuse texture
+				std::string_view texture = surface.texture;
+				for (std::uint32_t i = 0; swap && i < swap->numAlternateTextures; ++i) {
+					const auto& alternate = swap->alternateTextures[i];
+
+					if (alternate.index3D == surface.index && alternate.textureSet) {
+						const char* path = alternate.textureSet->GetTexturePath(RE::BSTextureSet::Texture::kDiffuse);
+						texture = path ? path : "";
+						break;
+					}
+				}
+
+				if (auto* landTexture = texture.empty() ? nullptr : LandTextureFor(texture); landTexture && !landTexture->textureGrassList.empty())
+					surfaces.push_back({ object.transform * surface.center, surface.radius * object.transform.scale, object.base, landTexture });
+			}
+		}
+
+		if (const auto* coordinates = cliffs ? cell->GetCoordinates() : nullptr)
+			logger::debug("Preloaded cliff surfaces in cell ({}, {}): {} cliffs, {} shapes", coordinates->cellX, coordinates->cellY, cliffs, surfaces.size());
+
 		return surfaces;
 	}
 
@@ -121,11 +179,13 @@ namespace GrassControl::CliffSurfaces
 		}
 
 		bool complete = false;
-		auto surfaces = CollectCell(cell, complete);
+		auto surfaces = cell->IsAttached() ? CollectCell(cell, complete) : CollectPreloaded(cell, complete);
+
 		if (complete) {
 			std::scoped_lock lock(mutex);
 			cells.insert_or_assign(cell->GetFormID(), surfaces);
 		}
+
 		return surfaces;
 	}
 

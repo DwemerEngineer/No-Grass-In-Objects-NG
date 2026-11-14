@@ -240,7 +240,6 @@ namespace GrassControl::DistantGrass
 		{
 			streamingAllowed = false;
 			gridUpdatePending = true;
-			// Pause streaming without changing the user's grass toggle
 		}
 		std::unique_ptr<CellInfoContainer> cellGrid;
 		std::unique_ptr<CacheOnlyCells> cacheOnlyCells;
@@ -285,6 +284,9 @@ namespace GrassControl::DistantGrass
 	RE::TESObjectCELL* GetCurrentWorldspaceCell(const RE::TES* tes, RE::TESWorldSpace* ws, int x, int y, bool quickLoad, bool allowLoadNow);
 
 	GrassState GetWantState(const CellInfo& cell, int curX, int curY, int uGrid, int grassRadius, bool canLoadFromFile, std::string_view world);
+
+	// Preloaded collision avoids rebuilding grass on cell attachment
+	GrassState BuildState(GrassState wanted, RE::TESObjectCELL& cell);
 
 	// Caller holds gridState.cellMapMutex, returns false if a task is already queued
 	bool PrepareGrassTask(const std::shared_ptr<CellInfo>& info, RE::TESObjectCELL* cell, GrassState wanted);

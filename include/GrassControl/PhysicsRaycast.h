@@ -5,6 +5,12 @@ namespace GrassControl::Util
 	struct ShapeSnapshot;
 }
 
+namespace GrassControl::CollisionGrid
+{
+	struct Instance;
+	class CellGeometry;
+}
+
 namespace GrassControl
 {
 	class RaycastHelper;
@@ -26,6 +32,8 @@ namespace GrassControl
 			float hitFraction = 0.0f;
 			RE::FormID formID = 0;
 			RE::ObjectRefHandle reference;
+			// RayResult retains the geometry that owns this instance
+			const CollisionGrid::Instance* instance = nullptr;
 			bool hitCliff = false;
 		};
 
@@ -34,6 +42,7 @@ namespace GrassControl
 			QueryStatus status = QueryStatus::Unavailable;
 			std::vector<HitResult> hits;
 			const char* unavailableReason = "no cell";
+			std::shared_ptr<const CollisionGrid::CellGeometry> geometry;
 		};
 
 		struct ShapeNames
@@ -57,7 +66,7 @@ namespace GrassControl
 
 		RayResult CastVolume(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL* cell, RE::GrassParam* param, const RaycastHelper& settings, bool ignoreCliff = false);
 
-		std::optional<ShapeNames> GetShapeNames(RE::ObjectRefHandle reference, RE::NiPoint3 position);
+		std::optional<ShapeNames> GetShapeNames(const HitResult& hit, RE::NiPoint3 position);
 
 		static bool ValidateSettings(const RaycastHelper& settings);
 
@@ -223,13 +232,26 @@ namespace GrassControl
 
 		void RetryPendingCells();
 
-		bool CellHasCollision(const RE::TESObjectCELL& cell) const;
+		static bool CellHasCollision(const RE::TESObjectCELL& cell);
 
 		static const RE::hkpCdBody* RootBody(const RE::hkpCdBody& body);
 
 		RayResult Query(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL* cell, const RaycastHelper& settings, bool ignoreCliff, RE::GrassParam* param, bool volumeQuery);
 
 		RayResult CastInWorld(const glm::vec4& start, const glm::vec4& end, RE::TESObjectCELL& cell, const RaycastHelper& settings, bool ignoreCliff, RE::GrassParam* param, bool volumeQuery);
+
+		static RayResult CastPreloaded(std::shared_ptr<const CollisionGrid::CellGeometry> geometry, const glm::vec4& start, const glm::vec4& end, const RaycastHelper& settings, bool ignoreCliff, RE::GrassParam* param, bool volumeQuery);
+
+		struct VolumeSize
+		{
+			float halfWidthX = 20;
+			float halfWidthY = 20;
+			float radius = 20;
+		};
+
+		static VolumeSize GetVolumeSize(const RaycastHelper& settings, RE::GrassParam* param);
+
+		static bool AcceptHit(const RaycastHelper& settings, bool ignoreCliff, HitResult& hit, bool& needsShape);
 
 		static bool CopyHit(const RE::hkpCdBody& body, const RaycastHelper& settings, bool ignoreCliff, HitResult& hit, bool& invalid);
 

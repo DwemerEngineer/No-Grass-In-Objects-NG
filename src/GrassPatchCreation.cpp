@@ -1,6 +1,7 @@
 #include "GrassControl/GrassPatchCreation.h"
 
 #include "GrassControl/CliffSurfaces.h"
+#include "GrassControl/CollisionGrid.h"
 #include "GrassControl/Config.h"
 #include "GrassControl/DistantGrass.h"
 #include "GrassControl/Engine.h"
@@ -181,7 +182,8 @@ namespace GrassControl
 	int GrassPatchCreation::ShapeCoordinate(int cell)
 	{
 		// Match engine truncation toward zero
-		return Config::ExtendGrassDistance ? cell / CellsPerShape * CellsPerShape : cell / CellsPerOrigin;
+		const int block = cell / CellsPerOrigin;
+		return Config::ExtendGrassDistance ? block * CellsPerOrigin : block;
 	}
 
 	RE::TESObjectCELL* GrassPatchCreation::GetCell()
@@ -214,11 +216,9 @@ namespace GrassControl
 			ReleaseNativePlacement();
 			workers.ReleaseBlock(block);
 		});
-
-		RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
 		GrassPatchCreation patchCreation(cell, abort);
-
-		if (!patchCreation.PrepareCell(NeedsCollision(manager, fromCache))) {
+		RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
+		if (!patchCreation.PrepareCell(manager, fromCache)) {
 			PhysicsRaycast::GetSingleton().DeferCell(cell);
 			DistantGrass::ClearCellAddGrassTask(cell);
 			return;
@@ -240,7 +240,7 @@ namespace GrassControl
 		if (!cell || !enabled)
 			return;
 
-		if (cell->IsAttached() && (Config::RayCast || Config::GrassCliffs))
+		if ((Config::RayCast || Config::GrassCliffs) && (cell->IsAttached() || CollisionGrid::Find(*cell)))
 			settings = Plugin::GetRaycastSettings();
 
 		workerCount = Config::ThreadedGrassPlacement ? static_cast<unsigned int>(std::max(1, oneapi::tbb::info::default_concurrency())) : 1;
@@ -295,15 +295,27 @@ namespace GrassControl
 
 	bool GrassPatchCreation::NeedsCollision(const RE::BGSGrassManager* manager, bool fromCache)
 	{
-		return !manager->generateGrassDataFiles && (fromCache ? Config::GrassCliffs : !Config::OnlyLoadFromCache);
+		return enabled && (Config::RayCast || Config::GrassCliffs) && !manager->generateGrassDataFiles && (fromCache ? Config::GrassCliffs : !Config::OnlyLoadFromCache);
 	}
 
-	bool GrassPatchCreation::PrepareCell(bool requireCollision)
+	bool GrassPatchCreation::CanPrepareCell(const RE::BGSGrassManager* manager, RE::TESObjectCELL& cell, bool fromCache)
 	{
-		if (!enabled || !requireCollision || !(Config::RayCast || Config::GrassCliffs) || cell->IsInteriorCell())
+		if (cell.IsInteriorCell() || !NeedsCollision(manager, fromCache))
 			return true;
 
-		return settings && (!settings->Valid || PhysicsRaycast::GetSingleton().CanFilterCell(*cell));
+		const auto settings = Plugin::GetRaycastSettings();
+		return settings && (!settings->Valid || PhysicsRaycast::GetSingleton().CanFilterCell(cell));
+	}
+
+	bool GrassPatchCreation::PrepareCell(const RE::BGSGrassManager* manager, bool fromCache)
+	{
+		if (!CanPrepareCell(manager, *cell, fromCache))
+			return false;
+
+		// Collision can become available after construction
+		if (!settings && NeedsCollision(manager, fromCache))
+			settings = Plugin::GetRaycastSettings();
+		return true;
 	}
 
 	std::vector<RE::TESGrass*> GrassPatchCreation::TextureGrasses(RE::TESLandTexture* texture)
@@ -1141,7 +1153,7 @@ namespace GrassControl
 
 		const auto& highest = *std::ranges::min_element(result.hits, {}, &PhysicsRaycast::HitResult::hitFraction);
 		const auto point = begin + (end - begin) * highest.hitFraction;
-		if (!highest.hitCliff || !settings->IsCliffAt(highest.formID, highest.reference, { point.x, point.y, point.z }))
+		if (!settings->IsCliffAt(highest, { point.x, point.y, point.z }))
 			return std::nullopt;
 
 		const auto normal = highest.normal.z < 0.0f ? -highest.normal : highest.normal;
@@ -1181,7 +1193,7 @@ namespace GrassControl
 
 	void GrassPatchCreation::AddCliffGrass(RE::BGSGrassManager* manager)
 	{
-		if (!enabled || !settings || !settings->Valid || !Config::GrassCliffs || *abort || !cell->IsAttached() || cell->IsInteriorCell())
+		if (!enabled || !settings || !settings->Valid || !Config::GrassCliffs || *abort || cell->IsInteriorCell())
 			return;
 
 		const auto* coordinates = cell->GetCoordinates();
@@ -1213,13 +1225,9 @@ namespace GrassControl
 			samples.erase(duplicates.begin(), duplicates.end());
 			sampleCount += samples.size();
 		}
-
-		if (sampleCount)
-			logger::debug("Cliff tops in cell ({}, {}): {} samples over {} landscape textures", coordinates->cellX, coordinates->cellY, sampleCount, tops.size());
-
 		const auto* maxTypesSetting = globals::settings::maxGrassTypesPerTexture;
 		const int maxTypes = maxTypesSetting ? std::max(1, maxTypesSetting->GetInteger()) : 7;
-
+		std::uint32_t blades = 0;
 		for (const auto& [landTexture, samples] : tops) {
 			int types = 0;
 			for (auto* grass : landTexture->textureGrassList) {
@@ -1230,12 +1238,15 @@ namespace GrassControl
 
 				++types;
 				const auto seed = static_cast<std::uint32_t>(coordinates->cellX) * 0x9E3779B9u ^ static_cast<std::uint32_t>(coordinates->cellY) * 0x85EBCA6Bu ^ grass->GetFormID() ^ std::rotl(landTexture->GetFormID(), 13);
-				AddCliffGrassType(manager, *grass, seed, samples);
+				blades += AddCliffGrassType(manager, *grass, seed, samples);
 			}
 		}
+
+		if (sampleCount)
+			logger::debug("Cliff tops in cell ({}, {}): {} samples over {} landscape textures, {} blades", coordinates->cellX, coordinates->cellY, sampleCount, tops.size(), blades);
 	}
 
-	void GrassPatchCreation::AddCliffGrassType(RE::BGSGrassManager* manager, RE::TESGrass& grass, std::uint32_t seed, const std::vector<RE::NiPoint3>& samples)
+	std::uint32_t GrassPatchCreation::AddCliffGrassType(RE::BGSGrassManager* manager, RE::TESGrass& grass, std::uint32_t seed, const std::vector<RE::NiPoint3>& samples)
 	{
 		auto param = MakeGrassParam(grass);
 		const auto* minimumSize = globals::settings::minGrassSize;
@@ -1243,12 +1254,14 @@ namespace GrassControl
 		const float chance = param.denstityPctPerQuadVertex[0];
 
 		if (!std::isfinite(spacing) || spacing < 1.0f || !std::isfinite(chance) || chance <= 0.0f)
-			return;
+			return 0;
 
 		const auto* coordinates = cell->GetCoordinates();
 		const auto [shape, handle] = PrepareShape(manager, param);
 		if (!shape)
-			return;
+			return 0;
+
+		const stl::scope_exit finish([&] { shape->DoneAddingInstances(handle->instanceGroupIndicies); });
 
 		const float minSlope = RE::GrassSlopeTable()[SlopeIndex(grass.GetMaxSlopeDegrees())];
 		const float maxSlope = RE::GrassSlopeTable()[SlopeIndex(grass.GetMinSlopeDegrees())];
@@ -1294,10 +1307,11 @@ namespace GrassControl
 			}
 		}
 
-		if (patch.created)
+		const auto created = patch.created;
+		if (created)
 			Commit(patch);
 
-		shape->DoneAddingInstances(handle->instanceGroupIndicies);
+		return created;
 	}
 
 	RE::NiPoint3 GrassPatchCreation::SlopeTangent(const RE::NiPoint3& normal) const

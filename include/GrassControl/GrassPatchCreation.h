@@ -67,7 +67,9 @@ namespace GrassControl
 		static std::uint32_t SelectGrass(RE::TESObjectLAND* land, std::uint32_t quadrant, std::uint32_t vertex, RE::GrassParam* params, std::uint32_t capacity, SelectGrassFunc select);
 
 		static bool NeedsCollision(const RE::BGSGrassManager* manager, bool fromCache);
-		bool PrepareCell(bool requireCollision = true);
+		// Recheck collision when a queued task runs
+		static bool CanPrepareCell(const RE::BGSGrassManager* manager, RE::TESObjectCELL& cell, bool fromCache);
+		bool PrepareCell(const RE::BGSGrassManager* manager, bool fromCache);
 		void PrepareSmooth(RE::BGSGrassManager* manager, bool fromCache);
 
 		static GrassTerrainCache::Snapshot CaptureTerrain(RE::TESObjectCELL* cell);
@@ -83,7 +85,6 @@ namespace GrassControl
 		inline static constexpr std::uint32_t SmoothPatchCandidates = 256;
 		inline static constexpr std::uint32_t InstanceBufferBytes = 0x40000;
 		inline static constexpr int CellsPerOrigin = 12;
-		inline static constexpr int CellsPerShape = CellsPerOrigin;
 		inline static constexpr float CellSize = 4096.0f;
 		inline static constexpr std::size_t GameplayParallelism = 6;
 
@@ -186,7 +187,6 @@ namespace GrassControl
 
 		inline static constexpr float CliffSampleStep = 128.0f;
 		inline static constexpr float MaxCliffRadius = 8192.0f;
-		// Allowed ground drop at cliff edges
 		inline static constexpr float CliffEdgeTolerance = 30.0f;
 		inline static constexpr float MinBladeReach = 16.0f;
 
@@ -197,11 +197,9 @@ namespace GrassControl
 			RE::FormID formID;
 		};
 
-		// Only the highest hit counts
 		std::optional<CliffTop> FindCliffTop(float x, float y, float top, float bottom) const;
-		// Check support on all four sides
 		bool SupportedAround(float x, float y, float z, float reach) const;
-		void AddCliffGrassType(RE::BGSGrassManager* manager, RE::TESGrass& grass, std::uint32_t seed, const std::vector<RE::NiPoint3>& samples);
+		std::uint32_t AddCliffGrassType(RE::BGSGrassManager* manager, RE::TESGrass& grass, std::uint32_t seed, const std::vector<RE::NiPoint3>& samples);
 		float LandShade(float x, float y, Random& random, float colorRange) const;
 
 		using DensityFields = GrassTerrainCache::Fields;

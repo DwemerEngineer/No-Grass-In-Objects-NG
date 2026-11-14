@@ -77,8 +77,9 @@ namespace GrassControl::DistantGrass
 
 		const auto have = info->have;
 		const auto wanted = info->wanted;
+		const auto build = BuildState(wanted, *cell);
 		const auto generation = info->taskGeneration;
-		if (wanted == GrassState::None || have == wanted || have == GrassState::Active || *abort || !IsValidLoadedCell(cell, wanted == GrassState::Active)) {
+		if (wanted == GrassState::None || have == build || have == GrassState::Active || *abort || !IsValidLoadedCell(cell, wanted == GrassState::Active)) {
 			info->ClearTask();
 			lock.unlock();
 			ClearCellAddGrassTask(cell, abort);
@@ -86,9 +87,10 @@ namespace GrassControl::DistantGrass
 		}
 
 		const bool fromCache = globals::AllowLoadGrass() && gridState.cacheIndex.Contains(*cell);
-		const bool requireCollision = wanted == GrassState::Active && GrassPatchCreation::NeedsCollision(manager, fromCache);
+		const bool requireCollision = build == GrassState::Active && GrassPatchCreation::NeedsCollision(manager, fromCache);
 		// Native placement can enter loader callbacks that need the map lock
 		lock.unlock();
+		GrassPatchCreation patchCreation(cell, abort);
 		RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
 		lock.lock();
 		if (!gridState.cellGrid || gridState.cellGrid->FindByCell(cell) != info || info->cell != cell || info->taskGeneration != generation || *abort) {
@@ -99,8 +101,7 @@ namespace GrassControl::DistantGrass
 			ClearCellAddGrassTask(cell, abort);
 			return;
 		}
-		GrassPatchCreation patchCreation(cell, abort);
-		if (!patchCreation.PrepareCell(requireCollision)) {
+		if (build == GrassState::Active && !patchCreation.PrepareCell(manager, fromCache)) {
 			info->ClearTask();
 			lock.unlock();
 			PhysicsRaycast::GetSingleton().DeferCell(cell);
@@ -139,7 +140,7 @@ namespace GrassControl::DistantGrass
 		if (info->cell == cell && info->taskGeneration == generation) {
 			info->ClearTask();
 			info->have = *abort ? have : unfiltered ? GrassState::Lod :
-			                                          wanted;
+			                                          build;
 		}
 		lock.unlock();
 

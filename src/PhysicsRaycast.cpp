@@ -1,6 +1,7 @@
 #include "GrassControl/PhysicsRaycast.h"
 
 #include "GrassControl/AddCellGrassTask.h"
+#include "GrassControl/CollisionGrid.h"
 #include "GrassControl/Config.h"
 #include "GrassControl/DistantGrass.h"
 #include "GrassControl/Engine.h"
@@ -126,7 +127,6 @@ namespace GrassControl
 		GetSingleton().worldReadGate.EnterWriteLock(lock, enterWriteLock);
 	}
 
-	// The deleting destructor frees this through the current Havok heap
 	RE::hkpSimpleShapePhantom* PhysicsRaycast::AllocatePhantom()
 	{
 		auto* router = RE::hkMemoryRouter::GetInstancePtr();
@@ -169,6 +169,18 @@ namespace GrassControl
 				hit.formID = form->formID;
 		}
 
+		bool needsShape = false;
+		if (!AcceptHit(settings, ignoreCliff, hit, needsShape))
+			return false;
+
+		if (reference && needsShape)
+			hit.reference = reference->GetHandle();
+
+		return true;
+	}
+
+	bool PhysicsRaycast::AcceptHit(const RaycastHelper& settings, bool ignoreCliff, HitResult& hit, bool& needsShape)
+	{
 		if (settings.Ignore && settings.Ignore->Contains(hit.formID))
 			return false;
 
@@ -178,13 +190,84 @@ namespace GrassControl
 		if (ignoreCliff && hit.hitCliff && !shapeRule)
 			return false;
 
-		if (reference && (shapeRule || settings.partIgnoredObjects.contains(hit.formID)))
-			hit.reference = reference->GetHandle();
-
+		needsShape = shapeRule || settings.partIgnoredObjects.contains(hit.formID);
 		return true;
 	}
 
-	bool PhysicsRaycast::CellHasCollision(const RE::TESObjectCELL& cell) const
+	PhysicsRaycast::VolumeSize PhysicsRaycast::GetVolumeSize(const RaycastHelper& settings, RE::GrassParam* param)
+	{
+		VolumeSize size;
+		if (settings.Width > 0) {
+			size.halfWidthX = size.halfWidthY = size.radius = static_cast<float>(settings.Width / 2);
+		} else if (param) {
+			if (auto* grass = RE::TESForm::LookupByID<RE::TESGrass>(param->grassFormID)) {
+				const auto& bounds = grass->boundData;
+				const float widthX = std::abs(float(bounds.boundMax.x - bounds.boundMin.x));
+				const float widthY = std::abs(float(bounds.boundMax.y - bounds.boundMin.y));
+
+				if (widthX > 0 || widthY > 0) {
+					if (widthX > 0)
+						size.halfWidthX = widthX / 2;
+					if (widthY > 0)
+						size.halfWidthY = widthY / 2;
+					size.radius = std::max(size.halfWidthX, size.halfWidthY) / 2;
+				}
+
+				size.halfWidthX *= static_cast<float>(settings.WidthMultiplier);
+				size.halfWidthY *= static_cast<float>(settings.WidthMultiplier);
+				size.radius *= static_cast<float>(settings.WidthMultiplier);
+			}
+		}
+
+		return size;
+	}
+
+	PhysicsRaycast::RayResult PhysicsRaycast::CastPreloaded(std::shared_ptr<const CollisionGrid::CellGeometry> geometry, const glm::vec4& start, const glm::vec4& end, const RaycastHelper& settings, bool ignoreCliff, RE::GrassParam* param, bool volumeQuery)
+	{
+		const RE::NiPoint3 from{ start.x, start.y, start.z }, to{ end.x, end.y, end.z };
+		std::vector<CollisionGrid::Hit> found;
+		bool cast = false;
+
+		if (volumeQuery) {
+			const auto size = GetVolumeSize(settings, param);
+			if (!ValidDimension(end.z - start.z) || (settings.Mode == 1 ? !ValidDimension(size.radius) : (!ValidDimension(size.halfWidthX) || !ValidDimension(size.halfWidthY)))) {
+				return { QueryStatus::InvalidInput, {} };
+			}
+
+			cast = settings.Mode == 1 ? geometry->CastVolume(from, to, size.radius, 0.0f, settings.RaycastMask, found) : geometry->CastVolume(from, to, size.halfWidthX, size.halfWidthY, settings.RaycastMask, found);
+		} else {
+			cast = geometry->CastRay(from, to, settings.RaycastMask, found);
+		}
+
+		if (!cast)
+			return { QueryStatus::Unavailable, {}, "no Havok memory router or heap on worker" };
+
+		RayResult result{ QueryStatus::Success, {} };
+
+		for (const auto& entry : found) {
+			HitResult hit{};
+			hit.hitFraction = entry.fraction;
+			hit.normal = { entry.normal.x, entry.normal.y, entry.normal.z };
+			hit.formID = entry.instance->base;
+
+			if (!ValidHit(hit.hitFraction, hit.normal.x, hit.normal.y, hit.normal.z) || result.hits.size() >= MaxHits)
+				return { QueryStatus::Failed, {} };
+
+			bool needsShape = false;
+			if (!AcceptHit(settings, ignoreCliff, hit, needsShape))
+				continue;
+
+			if (needsShape)
+				hit.instance = entry.instance;
+
+			result.hits.push_back(hit);
+		}
+
+		result.geometry = std::move(geometry);
+		return result;
+	}
+
+	bool PhysicsRaycast::CellHasCollision(const RE::TESObjectCELL& cell)
 	{
 		const auto* loaded = cell.GetRuntimeData().loadedData;
 		return cell.IsAttached() && loaded && loaded->refsFullyLoaded && !loaded->criticalQueuedRefCount && !loaded->queuedRefCount;
@@ -195,11 +278,12 @@ namespace GrassControl
 		if (queriesDisabled)
 			return { QueryStatus::Unavailable, {}, "loading disabled queries" };
 
-		// Attachment can precede the reference tasks that add Havok collision
-		if (!CellHasCollision(cell) || cell.IsInteriorCell())
+		if (!CellHasCollision(cell) || cell.IsInteriorCell()) {
+			if (auto geometry = CollisionGrid::Find(cell))
+				return CastPreloaded(std::move(geometry), start, end, settings, ignoreCliff, param, volumeQuery);
 			return { QueryStatus::Unavailable, {}, "cell references are not loaded" };
+		}
 
-		// Hold queryMutex while borrowing the world wrapper
 		RE::NiPointer<RE::bhkWorld> owner(cell.GetbhkWorld());
 		if (!owner)
 			return { QueryStatus::Unavailable, {}, "no Havok world wrapper" };
@@ -221,29 +305,9 @@ namespace GrassControl
 			if (!world->collisionInput)
 				return { QueryStatus::Unavailable, {}, "no Havok collision input" };
 
-			float halfWidthX = 20, halfWidthY = 20, radius = 20;
-			if (settings.Width > 0) {
-				halfWidthX = halfWidthY = radius = static_cast<float>(settings.Width / 2);
-			} else if (param) {
-				if (auto* grass = RE::TESForm::LookupByID<RE::TESGrass>(param->grassFormID)) {
-					const auto& bounds = grass->boundData;
-					const float widthX = std::abs(float(bounds.boundMax.x - bounds.boundMin.x));
-					const float widthY = std::abs(float(bounds.boundMax.y - bounds.boundMin.y));
-					if (widthX > 0 || widthY > 0) {
-						if (widthX > 0)
-							halfWidthX = widthX / 2;
-						if (widthY > 0)
-							halfWidthY = widthY / 2;
-						radius = std::max(halfWidthX, halfWidthY) / 2;
-					}
-
-					halfWidthX *= static_cast<float>(settings.WidthMultiplier);
-					halfWidthY *= static_cast<float>(settings.WidthMultiplier);
-					radius *= static_cast<float>(settings.WidthMultiplier);
-				}
-			}
-
+			const auto [halfWidthX, halfWidthY, radius] = GetVolumeSize(settings, param);
 			const float height = end.z - start.z;
+
 			if (!ValidDimension(height) ||
 				(settings.Mode == 1 ? !ValidDimension(radius) : (!ValidDimension(halfWidthX) || !ValidDimension(halfWidthY))))
 				return { QueryStatus::InvalidInput, {} };
@@ -269,7 +333,6 @@ namespace GrassControl
 		input.from = RE::hkVector4(havokStart.x, havokStart.y, havokStart.z, 1);
 		input.to = RE::hkVector4(havokEnd.x, havokEnd.y, havokEnd.z, 1);
 
-		// Collect all hits so ignored objects do not hide other blockers
 		RE::CastRay(world.get(), input, collector);
 		if (collector.invalid)
 			return { QueryStatus::Failed, {} };
@@ -520,8 +583,11 @@ namespace GrassControl
 	{
 		std::shared_lock lock(queryMutex);
 
-		if (queriesDisabled || !CellHasCollision(cell))
+		if (queriesDisabled)
 			return false;
+
+		if (!CellHasCollision(cell))
+			return CollisionGrid::Find(const_cast<RE::TESObjectCELL&>(cell)) != nullptr;
 
 		// Neighboring cells can have collision extending into this cell
 		const auto* tes = RE::TES::GetSingleton();
@@ -533,10 +599,12 @@ namespace GrassControl
 		for (std::uint32_t x = 0; x < grid->length; ++x) {
 			for (std::uint32_t y = 0; y < grid->length; ++y) {
 				auto* neighbor = grid->GetCell(x, y);
+
 				// Empty slots beyond the worldspace edge have no collision to wait for
 				const auto* at = neighbor ? neighbor->GetCoordinates() : nullptr;
 				if (!at)
 					continue;
+
 				if (std::abs(at->cellX - coordinates->cellX) <= 1 && std::abs(at->cellY - coordinates->cellY) <= 1 && !CellHasCollision(*neighbor))
 					return false;
 			}
@@ -594,11 +662,6 @@ namespace GrassControl
 			if (!cell || cell->IsInteriorCell() || cell->GetRuntimeData().worldSpace != tes->GetRuntimeData2().worldSpace)
 				continue;
 
-			if (!Config::ExtendGrassDistance && !CanFilterCell(*cell)) {
-				DeferCell(cell);
-				continue;
-			}
-
 			bool queued = false;
 			{
 				RE::BSSpinLockGuard taskLock(cell->grassTaskLock);
@@ -622,7 +685,6 @@ namespace GrassControl
 		if (!started)
 			return;
 
-		// Free the query phantom before destroying its Havok router
 		resources.Reset();
 		Send(1);
 	}
@@ -664,13 +726,21 @@ namespace GrassControl
 			RE::DebugMessageBox("NGIO could not complete repeated physics queries. Grass placement used its fallback behavior. See the NGIO log for the affected cell and query status.");
 	}
 
-	std::optional<PhysicsRaycast::ShapeNames> PhysicsRaycast::GetShapeNames(RE::ObjectRefHandle handle, RE::NiPoint3 position)
+	std::optional<PhysicsRaycast::ShapeNames> PhysicsRaycast::GetShapeNames(const HitResult& hit, RE::NiPoint3 position)
 	{
+		if (hit.instance) {
+			const auto& instance = *hit.instance;
+			if (const auto* shape = Util::ClosestShape(instance.model->Shapes(), instance.toModel * position))
+				return ShapeNames{ shape->name, instance.model->rootName };
+			return std::nullopt;
+		}
+
 		std::shared_lock lock(queryMutex);
 
 		if (queriesDisabled)
 			return std::nullopt;
 
+		const auto& handle = hit.reference;
 		const auto reference = handle.get();
 		if (!reference)
 			return std::nullopt;

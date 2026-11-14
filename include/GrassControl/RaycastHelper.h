@@ -2,6 +2,7 @@
 
 #include "GrassControl/Config.h"
 #include "GrassControl/ObjectHandler.h"
+#include "GrassControl/PhysicsRaycast.h"
 #include "GrassControl/Util.h"
 
 namespace GrassControl
@@ -39,7 +40,7 @@ namespace GrassControl
 
 		bool HasCliffShapeRule(RE::FormID formID) const;
 
-		bool IsCliffAt(RE::FormID formID, RE::ObjectRefHandle reference, const RE::NiPoint3& point) const;
+		bool IsCliffAt(const PhysicsRaycast::HitResult& hit, const RE::NiPoint3& point) const;
 
 		// Collision only, texture filtering belongs to the caller
 		bool CanPlaceGrass(RE::TESObjectLAND* land, float x, float y, float z, RE::GrassParam* param, bool ignoreCliffs) const;

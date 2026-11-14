@@ -1,4 +1,5 @@
 #include "GrassControl/Main.h"
+#include "GrassControl/CollisionGrid.h"
 #include "GrassControl/Config.h"
 #include "GrassControl/DistantGrass.h"
 #include "GrassControl/Engine.h"
@@ -57,11 +58,15 @@ namespace GrassControl::Plugin
 				switch (message->type) {
 				case MessagingInterface::kPreLoadGame:
 					PhysicsRaycast::GetSingleton().SetQueriesDisabled(true);
+					CollisionGrid::Clear();
 					break;
 
-				case MessagingInterface::kPostLoadGame:
 				case MessagingInterface::kNewGame:
+				case MessagingInterface::kPostLoadGame:
 					{
+						if (message->type == MessagingInterface::kNewGame)
+							CollisionGrid::Clear();
+
 						auto* ui = RE::UI::GetSingleton();
 						PhysicsRaycast::GetSingleton().SetQueriesDisabled(!ui || ui->IsMenuOpen(RE::MainMenu::MENU_NAME));
 						break;
@@ -73,6 +78,7 @@ namespace GrassControl::Plugin
 
 				case MessagingInterface::kDataLoaded:
 					InitializeRaycastSettings();
+					CollisionGrid::Start();
 					Events::Register();
 					if (Config::UseGrassCache && !Config::loadFromBSA && !Config::GeneratingCache && DistantGrass::gridState.cacheIndex.Empty()) {
 						const auto* cacheWarning = Config::OnlyLoadFromCache ?
