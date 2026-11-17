@@ -91,6 +91,7 @@ namespace GrassControl::DistantGrass
 		// Native placement can enter loader callbacks that need the map lock
 		lock.unlock();
 		GrassPatchCreation patchCreation(cell, abort);
+		const auto cliffSurfaces = patchCreation.CollectCliffSurfaces();
 		RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
 		lock.lock();
 		if (!gridState.cellGrid || gridState.cellGrid->FindByCell(cell) != info || info->cell != cell || info->taskGeneration != generation || *abort) {
@@ -132,7 +133,7 @@ namespace GrassControl::DistantGrass
 
 		GrassPatchCreation::ReleaseNativePlacement();
 		if (!*abort)
-			patchCreation.AddCliffGrass(manager);
+			patchCreation.AddCliffGrass(manager, cliffSurfaces);
 
 		// Retry if collision disappeared during placement and left grass unfiltered
 		const bool unfiltered = requireCollision && PhysicsRaycast::UnavailableQueries() != unavailableBefore;

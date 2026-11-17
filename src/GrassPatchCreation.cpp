@@ -217,6 +217,7 @@ namespace GrassControl
 			workers.ReleaseBlock(block);
 		});
 		GrassPatchCreation patchCreation(cell, abort);
+		const auto cliffSurfaces = Config::GeneratingCache ? std::vector<CliffSurfaces::Surface>{} : patchCreation.CollectCliffSurfaces();
 		RE::BSSpinLockGuard grassLock(cell->grassCreateLock);
 		if (!patchCreation.PrepareCell(manager, fromCache)) {
 			PhysicsRaycast::GetSingleton().DeferCell(cell);
@@ -230,7 +231,7 @@ namespace GrassControl
 
 		// Cache serialization has already finished
 		if (!*abort && !Config::GeneratingCache)
-			patchCreation.AddCliffGrass(manager);
+			patchCreation.AddCliffGrass(manager, cliffSurfaces);
 	}
 
 	GrassPatchCreation::GrassPatchCreation(RE::TESObjectCELL* a_cell, bool* a_abort) :
@@ -1191,15 +1192,23 @@ namespace GrassControl
 		return Shade(color, random.SignedFloat(), colorRange);
 	}
 
-	void GrassPatchCreation::AddCliffGrass(RE::BGSGrassManager* manager)
+	std::vector<CliffSurfaces::Surface> GrassPatchCreation::CollectCliffSurfaces() const
 	{
-		if (!enabled || !settings || !settings->Valid || !Config::GrassCliffs || *abort || cell->IsInteriorCell())
+		if (!enabled || !cell || !settings || !settings->Valid || !Config::GrassCliffs || *abort || cell->IsInteriorCell())
+			return {};
+
+		return CliffSurfaces::Get(cell);
+	}
+
+	void GrassPatchCreation::AddCliffGrass(RE::BGSGrassManager* manager, const std::vector<CliffSurfaces::Surface>& surfaces)
+	{
+		if (surfaces.empty() || *abort)
 			return;
 
 		const auto* coordinates = cell->GetCoordinates();
 		std::unordered_map<RE::TESLandTexture*, std::vector<RE::NiPoint3>> tops;
 
-		for (const auto& surface : CliffSurfaces::Get(cell)) {
+		for (const auto& surface : surfaces) {
 			if (*abort)
 				return;
 

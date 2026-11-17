@@ -1,5 +1,7 @@
 #pragma once
 
+#include "GrassControl/CliffSurfaces.h"
+
 namespace GrassControl
 {
 	struct GrassDensityField
@@ -75,7 +77,9 @@ namespace GrassControl
 		static GrassTerrainCache::Snapshot CaptureTerrain(RE::TESObjectCELL* cell);
 		static void ClearTerrainCache();
 
-		void AddCliffGrass(RE::BGSGrassManager* manager);
+		// Collect before grassCreateLock: collection takes engine locks the main thread holds while waiting for it
+		std::vector<CliffSurfaces::Surface> CollectCliffSurfaces() const;
+		void AddCliffGrass(RE::BGSGrassManager* manager, const std::vector<CliffSurfaces::Surface>& surfaces);
 
 	private:
 		inline static constexpr std::size_t InstanceHalfwords = 16;
