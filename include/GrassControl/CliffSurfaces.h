@@ -1,5 +1,7 @@
 #pragma once
 
+#include "GrassControl/Engine.h"
+
 namespace GrassControl::CliffSurfaces
 {
 	struct Surface
@@ -7,7 +9,7 @@ namespace GrassControl::CliffSurfaces
 		RE::NiPoint3 center;
 		float radius;
 		RE::FormID object;
-		RE::TESLandTexture* landTexture;
+		std::string texture;
 	};
 
 	inline std::mutex mutex;
@@ -85,8 +87,12 @@ namespace GrassControl::CliffSurfaces
 		{
 			const auto path = NormalizeTexturePath(texturePath);
 			const auto exact = byPath.find(path);
-			if (exact != byPath.end() && !exact->second->textureGrassList.empty())
-				return exact->second;
+			if (exact != byPath.end()) {
+				auto& grass = RE::GetGrassList(exact->second);
+				// An empty seasonal swap must not fall back to another texture's grass.
+				if (!grass.empty() || std::addressof(grass) != std::addressof(exact->second->textureGrassList))
+					return exact->second;
+			}
 			if (const auto it = byStem.find(std::string(FileStem(path))); it != byStem.end())
 				return it->second;
 			return exact != byPath.end() ? exact->second : nullptr;

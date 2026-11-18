@@ -2,6 +2,13 @@
 
 namespace RE
 {
+	// Seasons of Skyrim redirects this getter to the active seasonal grass list.
+	inline BSSimpleList<TESGrass*>& GetGrassList(TESLandTexture* texture)
+	{
+		static REL::Relocation<BSSimpleList<TESGrass*>& (*)(TESLandTexture*)> func{ RELOCATION_ID(18414, 18845) };
+		return func(texture);
+	}
+
 	// Writes the returned instance count to manager->instanceData
 	inline std::uint32_t CreateGrassPatch(BGSGrassManager* manager, CreateGrassParams* params)
 	{

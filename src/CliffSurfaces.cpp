@@ -47,8 +47,8 @@ namespace GrassControl::CliffSurfaces
 		if (!texture || texture->name.empty())
 			return;
 
-		if (auto* landTexture = LandTextureFor(texture->name.c_str()); landTexture && !landTexture->textureGrassList.empty())
-			surfaces.push_back({ geometry->worldBound.center, geometry->worldBound.radius, formID, landTexture });
+		if (LandTextureFor(texture->name.c_str()))
+			surfaces.push_back({ geometry->worldBound.center, geometry->worldBound.radius, formID, texture->name.c_str() });
 	}
 
 	static std::vector<Surface> CollectCell(RE::TESObjectCELL* cell, bool& complete)
@@ -159,8 +159,8 @@ namespace GrassControl::CliffSurfaces
 					}
 				}
 
-				if (auto* landTexture = texture.empty() ? nullptr : LandTextureFor(texture); landTexture && !landTexture->textureGrassList.empty())
-					surfaces.push_back({ object.transform * surface.center, surface.radius * object.transform.scale, object.base, landTexture });
+				if (!texture.empty() && LandTextureFor(texture))
+					surfaces.push_back({ object.transform * surface.center, surface.radius * object.transform.scale, object.base, std::string(texture) });
 			}
 		}
 

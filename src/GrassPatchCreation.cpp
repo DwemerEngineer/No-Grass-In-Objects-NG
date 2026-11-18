@@ -1212,6 +1212,10 @@ namespace GrassControl
 			if (*abort)
 				return;
 
+			auto* landTexture = CliffSurfaces::GetTextureIndex().Find(surface.texture);
+			if (!landTexture || RE::GetGrassList(landTexture).empty())
+				continue;
+
 			const auto& center = surface.center;
 			const float radius = std::min(surface.radius, MaxCliffRadius);
 
@@ -1220,7 +1224,7 @@ namespace GrassControl
 					const auto top = FindCliffTop(x, y, center.z + radius + 1.0f, center.z - radius - 1.0f);
 
 					if (top && top->formID == surface.object && top->position.GetSquaredDistance(center) <= radius * radius)
-						tops[surface.landTexture].push_back({ x, y, top->position.z });
+						tops[landTexture].push_back({ x, y, top->position.z });
 				}
 			}
 		}
@@ -1239,7 +1243,7 @@ namespace GrassControl
 		std::uint32_t blades = 0;
 		for (const auto& [landTexture, samples] : tops) {
 			int types = 0;
-			for (auto* grass : landTexture->textureGrassList) {
+			for (auto* grass : RE::GetGrassList(landTexture)) {
 				if (*abort || types >= maxTypes)
 					break;
 				if (!grass)
