@@ -328,7 +328,7 @@ namespace GrassControl
 		const auto* setting = globals::settings::maxGrassTypesPerTexture;
 		const int maximum = std::max({ 0, setting ? setting->GetInteger() : 2, Config::EnsureMaxGrassTypesPerTextureSetting });
 		int used = 0;
-		for (auto* grass : texture->textureGrassList) {
+		for (auto* grass : RE::GetGrassList(texture)) {
 			if (!grass)
 				continue;
 

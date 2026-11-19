@@ -392,7 +392,7 @@ namespace GrassControl::DistantGrass
 			if (!texture)
 				return;
 
-			for (auto* grass : texture->textureGrassList) {
+			for (auto* grass : RE::GetGrassList(texture)) {
 				const char* model = grass ? grass->GetModel() : nullptr;
 				if (model && *model)
 					models.push_back(model);
