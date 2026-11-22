@@ -419,10 +419,12 @@ namespace GrassControl
 						mov(r8d, ptr[rbx + a_rbxWorldSpaceOffset + 0x14]);  // y = task->y;
 
 						sub(rsp, 0x20);
-						call(ptr[rip + loadCustomCell]);  // LoadDistantCellNow(worldSpace, x, y);
+						call(ptr[rip + loadCustomCell]);  // handled = LoadDistantCellNow(worldSpace, x, y);
 						add(rsp, 0x20);
+						test(al, al);
+						je(resolveCell);  // if (!handled) goto resolveCell;
 
-						jmp(ptr[rip + completeTask]);  // Custom tasks have no cell pointer for the native loader
+						jmp(ptr[rip + completeTask]);  // Distant tasks leave the native cell pointer empty
 
 						L(checkNormalLoad);
 						cmp(al, 0);
@@ -496,7 +498,7 @@ namespace GrassControl
 						mov(edx, ptr[rbx + rbx_offset + 0x4]);  // y = task->y;
 
 						sub(rsp, 0x20);
-						call(ptr[rip + funcLabel]);  // ourMethod = CellLoadHook(x, y);
+						call(ptr[rip + funcLabel]);  // ourMethod = CellInfoContainer::ClaimTerrainLoad(x, y);
 						add(rsp, 0x20);
 
 						mov(byte[rbx + rbx_offset + 0xe], al);  // task->ourMethod = ourMethod;
@@ -511,7 +513,7 @@ namespace GrassControl
 					}
 				};
 
-				CellLoadSelectionPatch patch(reinterpret_cast<std::uintptr_t>(CellLoadHook), addr + REL::Relocate(0x7, 0xB, 0x7), REL::Relocate(0x30, 0x30, 0x38));
+				CellLoadSelectionPatch patch(reinterpret_cast<std::uintptr_t>(CellInfoContainer::ClaimTerrainLoad), addr + REL::Relocate(0x7, 0xB, 0x7), REL::Relocate(0x30, 0x30, 0x38));
 				patch.ready();
 				if (!REL::Module::IsAE())
 					REL::safe_write(addr + 5, REL::NOP2, 2);

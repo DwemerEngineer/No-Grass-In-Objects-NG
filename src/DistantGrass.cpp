@@ -147,10 +147,11 @@ namespace GrassControl::DistantGrass
 		return it != map.end() ? it->second : nullptr;
 	}
 
-	unsigned char CellLoadHook(const int x, const int y)
+	unsigned char CellInfoContainer::ClaimTerrainLoad(const int x, const int y)
 	{
-		const auto info = gridState.cellGrid->GetFromGrid(x, y);
-		return info && info->AdvanceTerrain(TerrainLoad::Queued, TerrainLoad::Claimed);
+		// An engine request for the same coordinates must keep the full cell load
+		return terrainRequest && terrainRequest->x == x && terrainRequest->y == y &&
+		       terrainRequest->AdvanceTerrain(TerrainLoad::Queued, TerrainLoad::Claimed);
 	}
 
 	static float GetGrassFadeRange()
@@ -212,11 +213,11 @@ namespace GrassControl::DistantGrass
 		GrassPatchCreation::CaptureTerrain(cell);
 	}
 
-	void LoadDistantCellNow(std::uintptr_t ws, int x, int y)
+	bool LoadDistantCellNow(std::uintptr_t ws, int x, int y)
 	{
 		const auto info = gridState.cellGrid->GetFromGrid(x, y);
 		if (!info || !info->AdvanceTerrain(TerrainLoad::Claimed, TerrainLoad::Loading))
-			return;
+			return true;
 
 		const stl::scope_exit finish([&] {
 			info->AdvanceTerrain(TerrainLoad::Loading, TerrainLoad::None);
@@ -226,7 +227,17 @@ namespace GrassControl::DistantGrass
 		auto* tes = RE::TES::GetSingleton();
 		if (!ws || !tes || !gridState.streamingAllowed || !gridState.gridUpdatesEnabled || tes->interiorCell ||
 			reinterpret_cast<std::uintptr_t>(tes->GetRuntimeData2().worldSpace) != ws)
-			return;
+			return true;
+
+		const int radius = globals::GridsToLoad() / 2;
+		const auto needsFullCell = [&](int centerX, int centerY) {
+			return std::abs(static_cast<std::int64_t>(x) - centerX) <= radius &&
+			       std::abs(static_cast<std::int64_t>(y) - centerY) <= radius;
+		};
+
+		// The native queue merges requests by coordinates, so approaching cells need the full load even if NGIO queued them first
+		if (needsFullCell(tes->currentGridX, tes->currentGridY) || needsFullCell(tes->currentQueuedX, tes->currentQueuedY))
+			return false;
 
 		// Leave references to the cell loader to avoid resetting NPCs
 		auto* cell = RE::CreateCellAt(RE::TESDataHandler::GetSingleton(), x, y, reinterpret_cast<RE::TESWorldSpace*>(ws));
@@ -239,11 +250,14 @@ namespace GrassControl::DistantGrass
 
 			tes = RE::TES::GetSingleton();
 			if (!tes)
-				return;
+				return true;
 
 			auto* world = tes->GetRuntimeData2().worldSpace;
 			if (!gridState.streamingAllowed || !gridState.gridUpdatesEnabled || tes->interiorCell || reinterpret_cast<std::uintptr_t>(world) != ws)
-				return;
+				return true;
+
+			if (needsFullCell(tes->currentGridX, tes->currentGridY) || needsFullCell(tes->currentQueuedX, tes->currentQueuedY))
+				return false;
 
 			const auto wanted = GetWantState(*info, tes->currentGridX, tes->currentGridY, globals::GridsToLoad(), GetGrassGridRadius(), globals::AllowLoadGrass(), world->editorID.c_str());
 			if (wanted != GrassState::None && info->have == GrassState::None && IsValidLoadedCell(cell, wanted == GrassState::Active))
@@ -252,6 +266,8 @@ namespace GrassControl::DistantGrass
 
 		if (queue)
 			QueueGrassCreation(cell);
+
+		return true;
 	}
 
 	bool ClearCellAddGrassTask(RE::TESObjectCELL* cell, const bool* taskAbort)
@@ -510,7 +526,11 @@ namespace GrassControl::DistantGrass
 
 				// Loader callbacks take cellMapMutex while holding the engine's loader lock
 				lock.unlock();
-				RE::ExteriorCellLoader::GetSingleton()->QueueCellLoad(world, static_cast<std::int16_t>(x), static_cast<std::int16_t>(y), false);
+				{
+					terrainRequest = info.get();
+					const stl::scope_exit clearRequest([] { terrainRequest = nullptr; });
+					RE::ExteriorCellLoader::GetSingleton()->QueueCellLoad(world, static_cast<std::int16_t>(x), static_cast<std::int16_t>(y), false);
+				}
 				if (info->AdvanceTerrain(TerrainLoad::Queued, TerrainLoad::None))
 					info->loadingTerrain = false;
 			}

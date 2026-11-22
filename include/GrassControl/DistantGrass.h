@@ -108,7 +108,7 @@ namespace GrassControl::DistantGrass
 	enum class TerrainLoad : std::uint8_t
 	{
 		None,
-		Queued,   // The next load of these coordinates belongs to NGIO
+		Queued,   // Waiting for NGIO to submit the terrain task
 		Claimed,  // Selected by the loader, but the terrain worker has not started
 		Loading
 	};
@@ -155,6 +155,8 @@ namespace GrassControl::DistantGrass
 	public:
 		CellInfoContainer();
 
+		static unsigned char ClaimTerrainLoad(int x, int y);
+
 		[[nodiscard]] std::shared_ptr<CellInfo> GetFromGrid(int x, int y);
 
 		std::shared_ptr<CellInfo> FindByCell(RE::TESObjectCELL* cell);
@@ -169,6 +171,8 @@ namespace GrassControl::DistantGrass
 		std::unordered_map<RE::TESObjectCELL*, std::shared_ptr<CellInfo>> map{ 1024 };
 
 	private:
+		inline static thread_local CellInfo* terrainRequest = nullptr;
+
 		inline static constexpr int GridHalf = 64;
 		inline static constexpr int GridSide = GridHalf * 2 + 1;
 		inline static constexpr std::size_t MaxDistantCellsInFlight = 32;
@@ -269,10 +273,8 @@ namespace GrassControl::DistantGrass
 
 	void RemoveCellGrass(RE::TESObjectCELL* cell);
 
-	// Nonzero selects NGIO's terrain-only loader
-	unsigned char CellLoadHook(int x, int y);
-
-	void LoadDistantCellNow(std::uintptr_t world, int x, int y);
+	// False resumes the native full-cell loader
+	bool LoadDistantCellNow(std::uintptr_t world, int x, int y);
 
 	void Update();
 
