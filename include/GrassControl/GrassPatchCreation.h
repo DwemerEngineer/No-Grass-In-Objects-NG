@@ -6,13 +6,22 @@ namespace GrassControl
 {
 	struct GrassDensityField
 	{
-		inline static constexpr int Side = 33;
+		inline static constexpr int CellSide = 33;
+		inline static constexpr int Border = 1;
+		inline static constexpr int Side = CellSide + 2 * Border;
 		inline static constexpr float Step = 128.0f;
+		using Warp = std::array<RE::NiPoint2, CellSide * CellSide>;
 		std::array<float, Side * Side> values{};
+		std::shared_ptr<const Warp> warp;
+		bool hasBorder = false;
 
-		static GrassDensityField Blend(const std::array<const GrassDensityField*, 9>& fields, const std::array<bool, 9>& present);
+		static Warp MakeWarp(int cellX, int cellY) noexcept;
+		static GrassDensityField Blend(const std::array<const GrassDensityField*, 9>& fields, const std::array<bool, 9>& present, std::shared_ptr<const Warp> warp = {});
 
 		float Sample(float x, float y) const noexcept;  // Cell-relative coordinates
+
+	private:
+		RE::NiPoint2 WarpOffset(float x, float y) const noexcept;  // Requires warp
 	};
 
 	class GrassTerrainCache
@@ -149,7 +158,9 @@ namespace GrassControl
 			std::uint64_t resumeRandomDraws = 0;
 			float minSlope;
 			float maxSlope;
-			float spacing;
+			RE::NiPoint2 origin;
+			float width;
+			float halfSpacing;  // Half a grid square, which is also the jitter range
 			float densityMultiplier = 1.0f;
 		};
 
@@ -211,18 +222,33 @@ namespace GrassControl
 
 		static std::vector<RE::TESGrass*> TextureGrasses(RE::TESLandTexture* texture);
 		static DensityFields ReadDensityFields(RE::TESObjectLAND* land);
-		std::pair<RE::BSMultiStreamInstanceTriShape*, RE::CellGrassData*> PrepareShape(RE::BGSGrassManager* manager, RE::GrassParam& param);
+		static DensityFields BlendNeighborhood(const std::array<GrassTerrainCache::Snapshot, 9>& neighbors, std::shared_ptr<const GrassDensityField::Warp> warp);
+		struct PreparedShape
+		{
+			RE::BSMultiStreamInstanceTriShape* shape = nullptr;
+			RE::CellGrassData* handle = nullptr;
+			RE::NiPoint2 origin;  // Instance positions are relative to this
+		};
+
+		// Centred shapes store positions with finer precision than block corners
+		static bool UseCentredShapes(const RE::BGSGrassManager* manager);
+		static float CentredOrigin(int cell, int& key) noexcept;
+		PreparedShape PrepareShape(RE::BGSGrassManager* manager, RE::GrassParam& param, bool centred = false);
+		static std::uint32_t SmoothCandidatesPerSide(float spacing, float patchWidth);
+		RE::CreateGrassParams MakeSmoothParams(const RE::TESGrass& grass, RE::GrassParam& param, RE::NiPoint3& start) const;
 		void GenerateSmoothCell();
 
 		std::shared_ptr<const GrassDensityField> DensityField(RE::TESObjectLAND* land, RE::FormID grassID);
 
-		bool Queue(RE::BGSGrassManager* manager, const RE::CreateGrassParams& params, RE::BSMultiStreamInstanceTriShape* shape, std::uint32_t cellSide = 0, std::uint32_t first = 0, std::uint32_t end = 0);
+		static void ApplyRuntimeParams(Patch& patch, const RE::CreateGrassParams& params);
+		bool Queue(RE::BGSGrassManager* manager, const RE::CreateGrassParams& params, RE::BSMultiStreamInstanceTriShape* shape, std::uint32_t cellSide = 0, std::uint32_t first = 0, std::uint32_t end = 0, const RE::NiPoint2* origin = nullptr);
 		void Flush();
 		void CancelWork();
 		void ResetBatch();
 		void Dispatch();
 		void Run() noexcept;
 		void Generate(Patch& patch, bool allowWorldLookup = false) const noexcept;
+		static std::uint32_t NativeDensityThreshold(const Patch& patch, float column, float row, float reciprocalSide) noexcept;
 		static float SampleDensity(const Patch& patch, const RE::NiPoint3& position) noexcept;
 
 		void MarkBlockedTextures(Patch& patch) const;
@@ -230,8 +256,12 @@ namespace GrassControl
 		void FilterPatches();
 		RE::NiPoint3 SlopeTangent(const RE::NiPoint3& normal) const;
 		void Commit(Patch& patch);
-		void Encode(const Candidate& candidate, bool fitsToSlope, std::uint16_t* instance, int cellX, int cellY) const noexcept;
+		void Encode(const Candidate& candidate, bool fitsToSlope, std::uint16_t* instance, const RE::NiPoint2& origin) const noexcept;
 		static std::uint32_t SlopeIndex(std::uint32_t degrees);
+		// Normal z bounds: steeper slopes have smaller z, so the bounds swap
+		static std::pair<float, float> SlopeLimits(std::uint32_t minDegrees, std::uint32_t maxDegrees);
+		// Block corner that the engine stores instance positions relative to
+		static float OriginCoordinate(int cell) noexcept;
 		// roll is in [-1, 1]
 		static float Shade(const RE::NiColorA& color, float roll, float colorRange) noexcept;
 		bool AcceptWater(const RE::CreateGrassParams& params, float height) const;

@@ -73,6 +73,7 @@ namespace RE
 		return func(tes, x, y);
 	}
 
+	// Finds the worldspace's cell or creates a blank one, without reading plugin records
 	inline TESObjectCELL* CreateCellAt(TESDataHandler* dataHandler, int x, int y, TESWorldSpace* world)
 	{
 		static REL::Relocation<TESObjectCELL* (*)(TESDataHandler*, int, int, TESWorldSpace*, bool)> func{ RELOCATION_ID(13620, 13718) };
