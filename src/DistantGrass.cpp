@@ -239,8 +239,11 @@ namespace GrassControl::DistantGrass
 		if (needsFullCell(tes->currentGridX, tes->currentGridY) || needsFullCell(tes->currentQueuedX, tes->currentQueuedY))
 			return false;
 
-		// Leave references to the cell loader to avoid resetting NPCs
-		auto* cell = RE::CreateCellAt(RE::TESDataHandler::GetSingleton(), x, y, reinterpret_cast<RE::TESWorldSpace*>(ws));
+		auto* worldSpace = reinterpret_cast<RE::TESWorldSpace*>(ws);
+		auto* cell = worldSpace->LoadCell(static_cast<std::int16_t>(x), static_cast<std::int16_t>(y));
+		if (!cell)
+			cell = RE::CreateCellAt(RE::TESDataHandler::GetSingleton(), x, y, worldSpace);
+		
 		if (cell && !IsValidLoadedCell(cell, false))
 			LoadTerrain(cell);
 
