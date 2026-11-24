@@ -869,25 +869,31 @@ namespace GrassControl::DistantGrass
 		GrassPatchCreation::LimitParallelism(!loading);
 
 		auto* tes = RE::TES::GetSingleton();
-		if (!gridState.cellGrid || !tes || loading)
+		if ((!gridState.cellGrid && !gridState.cacheOnlyCells) || !tes || loading)
 			return;
 
 		auto* world = tes->GetRuntimeData2().worldSpace;
-		if (tes->interiorCell || !world)
+		if (tes->interiorCell || !world) {
+			if (gridState.gridUpdatesEnabled)
+				UpdateGrassGridNow(tes, 0, 0, -1);
+
+			gridState.gridUpdatePending = true;
 			return;
+		}
 
 		auto* manager = RE::BGSGrassManager::GetSingleton();
-		if (!gridState.gridUpdatesEnabled || !manager || !manager->enableGrass)
+		if (!manager || !manager->enableGrass || (!gridState.gridUpdatesEnabled && !gridState.gridUpdatePending))
 			return;
 
-		RetireReplacedGrass();
-
-		RetryPreloadedCells();
+		if (gridState.cellGrid) {
+			RetireReplacedGrass();
+			RetryPreloadedCells();
+		}
 
 		if (gridState.gridUpdatePending.exchange(false))
-			UpdateGrassGridNow(tes, 0, 0, 0);
+			UpdateGrassGridNow(tes, 0, 0, gridState.gridUpdatesEnabled ? 0 : 1);
 
-		if (gridState.gridUpdatePending)
+		if (!gridState.cellGrid || gridState.gridUpdatePending)
 			return;
 
 		gridState.streamingAllowed = true;
