@@ -298,6 +298,40 @@ namespace GrassControl
 
 	namespace DistantGrass
 	{
+		struct WorldCellLookup
+		{
+			static RE::BSSpinLock& MapLock()
+			{
+				static REL::Relocation<RE::BSSpinLock*> lock{ RELOCATION_ID(514977, 401117) };
+				return *lock;
+			}
+
+			static RE::TESObjectCELL* thunk(RE::TESWorldSpace* world, RE::CellID key)
+			{
+				RE::BSSpinLockGuard lock(MapLock());
+				const auto it = world->cellMap.find(key);
+				auto* cell = it != world->cellMap.end() ? it->second : nullptr;
+
+				// The loader can look up cells before their initialization finishes
+				if (cell && !cell->IsInitialized() && !RE::GetStaticTLSData()->unk5D0[0x8])
+					return nullptr;
+
+				return cell;
+			}
+
+			inline static REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct WorldCellLookupAt
+		{
+			static RE::TESObjectCELL* thunk(RE::TESWorldSpace* world, int x, std::uint16_t y)
+			{
+				return WorldCellLookup::thunk(world, { static_cast<std::int16_t>(y), static_cast<std::int16_t>(x) });
+			}
+
+			inline static REL::Relocation<decltype(thunk)> func;
+		};
+
 		static RE::TESObjectCELL* CellFromExtraList(const RE::ExtraDataList* a_extraList)
 		{
 			return reinterpret_cast<RE::TESObjectCELL*>(reinterpret_cast<std::uintptr_t>(a_extraList) - offsetof(RE::TESObjectCELL, extraList));
@@ -379,6 +413,14 @@ namespace GrassControl
 		static void InstallCellGridPatches()
 		{
 			auto& trampoline = SKSE::GetTrampoline();
+
+			// Older flat runtimes leave cell-map readers unlocked while distant cell creation can grow the map
+			if (!REL::Module::IsVR() && !stl::is_ae_17()) {
+				stl::write_thunk_jump<WorldCellLookup>(RELOCATION_ID(13549, 30798).address());
+
+				if (REL::Module::IsAE())
+					stl::write_thunk_jump<WorldCellLookupAt>(RELOCATION_ID(13549, 13641).address());
+			}
 
 			REL::safe_write(RELOCATION_ID(38141, 39098).address(), REL::RET);
 			REL::safe_write(RELOCATION_ID(13240, 13391).address() + (0x55E - 0x480), REL::NOP5, 5);
