@@ -3,7 +3,7 @@ message("Using toolchain file ${CMAKE_TOOLCHAIN_FILE}.")
 
 project(
   NGIO-NG
-  VERSION 2.2.0
+  VERSION 2.3.0
   LANGUAGES CXX
 )
 
