@@ -243,7 +243,7 @@ namespace GrassControl::DistantGrass
 		auto* cell = worldSpace->LoadCell(static_cast<std::int16_t>(x), static_cast<std::int16_t>(y));
 		if (!cell)
 			cell = RE::CreateCellAt(RE::TESDataHandler::GetSingleton(), x, y, worldSpace);
-		
+
 		if (cell && !IsValidLoadedCell(cell, false))
 			LoadTerrain(cell);
 

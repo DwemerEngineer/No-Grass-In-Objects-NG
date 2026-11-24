@@ -40,7 +40,7 @@ namespace GrassControl::CliffSurfaces
 	{
 		std::string result(path);
 		std::ranges::transform(result, result.begin(), [](unsigned char c) { return c == '/' ? '\\' : static_cast<char>(std::tolower(c)); });
-		
+
 		for (const std::string_view prefix : { "data\\", "textures\\" }) {
 			if (result.starts_with(prefix))
 				result.erase(0, prefix.size());
@@ -76,7 +76,7 @@ namespace GrassControl::CliffSurfaces
 
 				if (!file->ReadData(editorID.data(), static_cast<std::uint32_t>(editorID.size())))
 					editorID.clear();
-				
+
 				if (!editorID.empty())
 					break;
 			}

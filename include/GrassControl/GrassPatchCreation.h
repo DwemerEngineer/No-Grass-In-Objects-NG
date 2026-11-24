@@ -131,6 +131,7 @@ namespace GrassControl
 		struct Candidate
 		{
 			RE::NiPoint3 position;
+			RE::NiPoint2 localPosition;
 			RE::NiPoint3 normal;
 			float shade;
 			float orientation;
@@ -232,8 +233,8 @@ namespace GrassControl
 
 		// Centred shapes store positions with finer precision than block corners
 		static bool UseCentredShapes(const RE::BGSGrassManager* manager);
-		static float CentredOrigin(int cell, int& key) noexcept;
-		PreparedShape PrepareShape(RE::BGSGrassManager* manager, RE::GrassParam& param, bool centred = false);
+		static float CentredOrigin(int cell, int& key, float spacing) noexcept;
+		PreparedShape PrepareShape(RE::BGSGrassManager* manager, RE::GrassParam& param, float spacing, bool centred);
 		static std::uint32_t SmoothCandidatesPerSide(float spacing, float patchWidth);
 		RE::CreateGrassParams MakeSmoothParams(const RE::TESGrass& grass, RE::GrassParam& param, RE::NiPoint3& start) const;
 		void GenerateSmoothCell();
@@ -256,7 +257,7 @@ namespace GrassControl
 		void FilterPatches();
 		RE::NiPoint3 SlopeTangent(const RE::NiPoint3& normal) const;
 		void Commit(Patch& patch);
-		void Encode(const Candidate& candidate, bool fitsToSlope, std::uint16_t* instance, const RE::NiPoint2& origin) const noexcept;
+		void Encode(const Candidate& candidate, bool fitsToSlope, std::uint16_t* instance) const noexcept;
 		static std::uint32_t SlopeIndex(std::uint32_t degrees);
 		// Normal z bounds: steeper slopes have smaller z, so the bounds swap
 		static std::pair<float, float> SlopeLimits(std::uint32_t minDegrees, std::uint32_t maxDegrees);

@@ -191,17 +191,18 @@ namespace GrassControl
 		result.warp = std::move(warp);
 		result.hasBorder = true;
 
-		const auto* center = present[CenterNeighbor] ? fields[CenterNeighbor] : nullptr;
+		constexpr std::array<std::pair<int, int>, 8> fallbackOffsets{ { { 0, -1 }, { -1, 0 }, { 1, 0 }, { 0, 1 }, { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 } } };
 		for (int y = 0; y < Side; ++y) {
 			for (int x = 0; x < Side; ++x) {
 				auto& value = result.values[y * Side + x];
-				if (blendPoint(x, y, value) || !center)
+				if (blendPoint(x, y, value))
 					continue;
 
-				// Missing neighbors extend this cell's nearest edge value
-				const int edgeX = std::clamp(x, Border, Side - Border - 1);
-				const int edgeY = std::clamp(y, Border, Side - Border - 1);
-				value = center->values[edgeY * Side + edgeX];
+				// Use a fixed world-axis order so adjacent cells choose the same covered point
+				for (const auto& [dx, dy] : fallbackOffsets) {
+					if (blendPoint(x + dx, y + dy, value))
+						break;
+				}
 			}
 		}
 
@@ -1081,23 +1082,23 @@ namespace GrassControl
 		};
 
 		// Positions are stored as half floats; smooth placement keeps them in the candidate's square so blades never stack
-		const auto storedPosition = [&](float x, float y, std::uint32_t gridX, std::uint32_t gridY) -> std::optional<RE::NiPoint3> {
+		const auto storedPosition = [&](float x, float y, std::uint32_t gridX, std::uint32_t gridY) -> std::optional<RE::NiPoint2> {
 			if (!stablePlacement)
-				return RE::NiPoint3{ originX + StoredCoordinate(x - originX), originY + StoredCoordinate(y - originY), 0.0f };
+				return RE::NiPoint2{ StoredCoordinate(x - originX), StoredCoordinate(y - originY) };
 
 			const auto storedX = StoredCoordinateWithin(x - originX, gridLine(patch.start.x, originX, gridX), gridLine(patch.start.x, originX, gridX + 1));
 			const auto storedY = StoredCoordinateWithin(y - originY, gridLine(patch.start.y, originY, gridY), gridLine(patch.start.y, originY, gridY + 1));
 			if (!storedX || !storedY)
 				return std::nullopt;
 
-			return RE::NiPoint3{ originX + *storedX, originY + *storedY, 0.0f };
+			return RE::NiPoint2{ *storedX, *storedY };
 		};
 
 		const auto store = [&](const Candidate& candidate) {
 			if (settings)
 				patch.candidates[patch.created] = candidate;
 			else
-				Encode(candidate, grass.fitsToSlope, patch.instances.data() + static_cast<std::size_t>(patch.created) * InstanceHalfwords, patch.origin);
+				Encode(candidate, grass.fitsToSlope, patch.instances.data() + static_cast<std::size_t>(patch.created) * InstanceHalfwords);
 
 			++patch.created;
 		};
@@ -1136,7 +1137,7 @@ namespace GrassControl
 				if (!stored)
 					return true;
 
-				const auto& position = *stored;
+				const RE::NiPoint3 position{ originX + stored->x, originY + stored->y, 0.0f };
 				TerrainSample terrain;
 				if (!SampleLoadedLand(params.land, position, terrain)) {
 					if (!allowWorldLookup)
@@ -1151,7 +1152,7 @@ namespace GrassControl
 				const float shade = Shade(terrain.color, random.SignedFloat(), grass.colorRange);
 				const float orientation = random.SignedFloat();
 				const float variation = random.SignedFloat() * grass.heightRange;
-				store({ { position.x, position.y, terrain.height }, terrain.normal, shade, orientation, variation });
+				store({ { position.x, position.y, terrain.height }, *stored, terrain.normal, shade, orientation, variation });
 				return true;
 			};
 
@@ -1242,7 +1243,7 @@ namespace GrassControl
 				continue;
 
 			auto* output = patch.instances.data() + static_cast<std::size_t>(accepted++) * InstanceHalfwords;
-			Encode(candidate, patch.grass.fitsToSlope, output, patch.origin);
+			Encode(candidate, patch.grass.fitsToSlope, output);
 		}
 
 		patch.created = accepted;
@@ -1301,7 +1302,7 @@ namespace GrassControl
 		return Config::ExtendGrassDistance && !Config::GeneratingCache && manager && !manager->generateGrassDataFiles;
 	}
 
-	float GrassPatchCreation::CentredOrigin(int cell, int& key) noexcept
+	float GrassPatchCreation::CentredOrigin(int cell, int& key, float spacing) noexcept
 	{
 		// Wind phase uses local x + y and repeats every 640π units, so shift by whole cycles to stay in step
 		constexpr double WindCycle = 640.0 * std::numbers::pi;
@@ -1324,22 +1325,31 @@ namespace GrassControl
 		}
 
 		const double centre = (low + high) * 0.5;
-		return static_cast<float>(corner + std::round((centre - corner) / WindCycle) * WindCycle);
+		const float origin = static_cast<float>(corner + std::round((centre - corner) / WindCycle) * WindCycle);
+		const float start = static_cast<float>(cell) * CellSize;
+		const float first = StoredCoordinate(start - origin);
+		const float last = StoredCoordinate(start + CellSize - origin);
+		const float precision = std::max(AdjacentStoredCoordinate(first, true) - first, last - AdjacentStoredCoordinate(last, false));
+		if (precision <= spacing)
+			return origin;
+
+		// Per-cell keys use a different residue from corner and block-centred shapes
+		key = cell * CellsPerOrigin + 1;
+		return start + CellSize * 0.5f;
 	}
 
-	GrassPatchCreation::PreparedShape GrassPatchCreation::PrepareShape(RE::BGSGrassManager* manager, RE::GrassParam& param, bool centred)
+	GrassPatchCreation::PreparedShape GrassPatchCreation::PrepareShape(RE::BGSGrassManager* manager, RE::GrassParam& param, float spacing, bool centred)
 	{
 		const auto* coordinates = cell->GetCoordinates();
 		std::uint64_t typeKey = 0;
 		RE::BSFixedString modelKey;
 
-		// Keys of 12b ± 6 never collide with corner keys and still divide to the same block
 		int keyX = ShapeCoordinate(coordinates->cellX);
 		int keyY = ShapeCoordinate(coordinates->cellY);
 		RE::NiPoint2 origin{ OriginCoordinate(coordinates->cellX), OriginCoordinate(coordinates->cellY) };
 		if (centred) {
-			origin.x = CentredOrigin(coordinates->cellX, keyX);
-			origin.y = CentredOrigin(coordinates->cellY, keyY);
+			origin.x = CentredOrigin(coordinates->cellX, keyX, spacing);
+			origin.y = CentredOrigin(coordinates->cellY, keyY, spacing);
 		}
 
 		auto* shape = RE::LoadGrassType(manager, &param, static_cast<std::uint32_t>(keyX), static_cast<std::uint32_t>(keyY), &typeKey, &modelKey);
@@ -1432,7 +1442,7 @@ namespace GrassControl
 			if (!candidatesPerSide)
 				continue;
 
-			const auto prepared = PrepareShape(placementManager, param, centred);
+			const auto prepared = PrepareShape(placementManager, param, CellSize / static_cast<float>(candidatesPerSide), centred);
 			if (!prepared.shape)
 				continue;
 
@@ -1537,7 +1547,7 @@ namespace GrassControl
 			samples.erase(duplicates.begin(), duplicates.end());
 			sampleCount += samples.size();
 		}
-		
+
 		const auto* maxTypesSetting = globals::settings::maxGrassTypesPerTexture;
 		const int maxTypes = maxTypesSetting ? std::max(1, maxTypesSetting->GetInteger()) : 7;
 		std::uint32_t blades = 0;
@@ -1570,7 +1580,9 @@ namespace GrassControl
 			return 0;
 
 		const auto* coordinates = cell->GetCoordinates();
-		const auto prepared = PrepareShape(manager, param, UseCentredShapes(manager));
+		const int perSide = std::max(1, static_cast<int>(CliffSampleStep / spacing));
+		const float step = CliffSampleStep / static_cast<float>(perSide);
+		const auto prepared = PrepareShape(manager, param, step, UseCentredShapes(manager));
 		if (!prepared.shape)
 			return 0;
 
@@ -1605,8 +1617,6 @@ namespace GrassControl
 
 		// Subdivide each cliff sample into a jittered grid at the grass spacing
 		Random random(seed);
-		const int perSide = std::max(1, static_cast<int>(CliffSampleStep / spacing));
-		const float step = CliffSampleStep / static_cast<float>(perSide);
 
 		for (const auto& sample : samples) {
 			for (int i = 0; i < perSide && !*abort; ++i) {
@@ -1621,9 +1631,9 @@ namespace GrassControl
 					if (!top || !canPlace(x, y, *top))
 						continue;
 
-					const Candidate candidate{ top->position, top->normal, LandShade(x, y, random, param.colorRange), random.SignedFloat(), random.SignedFloat() * param.heightRange };
+					const Candidate candidate{ top->position, { StoredCoordinate(top->position.x - prepared.origin.x), StoredCoordinate(top->position.y - prepared.origin.y) }, top->normal, LandShade(x, y, random, param.colorRange), random.SignedFloat(), random.SignedFloat() * param.heightRange };
 					patch.instances.resize(static_cast<std::size_t>(patch.created + 1) * InstanceHalfwords);
-					Encode(candidate, param.fitsToSlope, patch.instances.data() + static_cast<std::size_t>(patch.created) * InstanceHalfwords, patch.origin);
+					Encode(candidate, param.fitsToSlope, patch.instances.data() + static_cast<std::size_t>(patch.created) * InstanceHalfwords);
 					++patch.created;
 				}
 			}
@@ -1655,7 +1665,7 @@ namespace GrassControl
 		return tangent;
 	}
 
-	void GrassPatchCreation::Encode(const Candidate& candidate, bool fitsToSlope, std::uint16_t* instance, const RE::NiPoint2& origin) const noexcept
+	void GrassPatchCreation::Encode(const Candidate& candidate, bool fitsToSlope, std::uint16_t* instance) const noexcept
 	{
 		using namespace DirectX::PackedVector;
 
@@ -1679,8 +1689,8 @@ namespace GrassControl
 			}
 		}
 
-		instance[0] = XMConvertFloatToHalf(candidate.position.x - origin.x);
-		instance[1] = XMConvertFloatToHalf(candidate.position.y - origin.y);
+		instance[0] = XMConvertFloatToHalf(candidate.localPosition.x);
+		instance[1] = XMConvertFloatToHalf(candidate.localPosition.y);
 		instance[2] = XMConvertFloatToHalf(candidate.position.z);
 		instance[3] = XMConvertFloatToHalf(candidate.shade);
 
