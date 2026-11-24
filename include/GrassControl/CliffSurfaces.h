@@ -40,12 +40,15 @@ namespace GrassControl::CliffSurfaces
 	{
 		std::string result(path);
 		std::ranges::transform(result, result.begin(), [](unsigned char c) { return c == '/' ? '\\' : static_cast<char>(std::tolower(c)); });
+
 		for (const std::string_view prefix : { "data\\", "textures\\" }) {
 			if (result.starts_with(prefix))
 				result.erase(0, prefix.size());
 		}
+
 		if (const auto dot = result.rfind('.'); dot != std::string::npos && result.find('\\', dot) == std::string::npos)
 			result.resize(dot);
+
 		return result;
 	}
 
@@ -64,16 +67,21 @@ namespace GrassControl::CliffSurfaces
 			for (auto* source : { texture->GetFile(), texture->GetFile(0) }) {
 				if (!source)
 					continue;
+
 				auto* file = source->Duplicate();
 				if (!file || !file->SeekForm(texture) || !file->SeekNextSubrecordType(0x44494445))  // EDID
 					continue;
+
 				editorID.resize(file->GetCurrentSubRecordSize());
+
 				if (!file->ReadData(editorID.data(), static_cast<std::uint32_t>(editorID.size())))
 					editorID.clear();
+
 				if (!editorID.empty())
 					break;
 			}
 		}
+
 		std::ranges::transform(editorID, editorID.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 		return editorID.find("nograss") != std::string::npos;
 	}
@@ -87,14 +95,17 @@ namespace GrassControl::CliffSurfaces
 		{
 			const auto path = NormalizeTexturePath(texturePath);
 			const auto exact = byPath.find(path);
+
 			if (exact != byPath.end()) {
 				auto& grass = RE::GetGrassList(exact->second);
 				// An empty seasonal swap must not fall back to another texture's grass.
 				if (!grass.empty() || std::addressof(grass) != std::addressof(exact->second->textureGrassList))
 					return exact->second;
 			}
+
 			if (const auto it = byStem.find(std::string(FileStem(path))); it != byStem.end())
 				return it->second;
+
 			return exact != byPath.end() ? exact->second : nullptr;
 		}
 	};
@@ -106,6 +117,7 @@ namespace GrassControl::CliffSurfaces
 			auto* data = RE::TESDataHandler::GetSingleton();
 			std::unordered_map<const RE::TESFile*, std::size_t> loadOrder;
 			std::unordered_map<RE::TESLandTexture*, bool> noGrassVariants;
+
 			for (const auto* file : data->files)
 				loadOrder.emplace(file, loadOrder.size() + 1);
 
@@ -114,9 +126,11 @@ namespace GrassControl::CliffSurfaces
 				const auto [variant, inserted] = noGrassVariants.try_emplace(texture);
 				if (inserted)
 					variant->second = IsNoGrassVariant(texture);
+
 				// Overrides can add grass to a NoGrass variant
 				return std::tuple{ !texture->textureGrassList.empty(), !variant->second, it != loadOrder.end() ? it->second : 0 };
 			};
+
 			const auto add = [&](auto& entries, std::string key, RE::TESLandTexture* texture) {
 				auto& match = entries[std::move(key)];
 				if (!match || priority(texture) > priority(match))
@@ -135,9 +149,11 @@ namespace GrassControl::CliffSurfaces
 				add(result.byStem, std::string(FileStem(path)), landTexture);
 				add(result.byPath, std::move(path), landTexture);
 			}
+
 			logger::info("Indexed {} landscape textures for cliff tops", result.byPath.size());
 			return result;
 		}();
+
 		return index;
 	}
 
